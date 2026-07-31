@@ -85,8 +85,8 @@ impl Network {
 
     /// Full accumulator refresh for both perspectives.
     pub fn accumulate(&self, pos: &Position, acc: &mut [[f32; HL]; 2]) {
-        for p in 0..2 {
-            acc[p].copy_from_slice(&self.ft_bias);
+        for half in acc.iter_mut() {
+            half.copy_from_slice(&self.ft_bias);
         }
         for p in 0..NUM_PIECES {
             let board = pos.pieces[p];
@@ -145,8 +145,8 @@ impl Network {
         }
 
         let mut out = self.b3[0];
-        for i in 0..L2 {
-            out += self.w3[i] * h2[i];
+        for (w, h) in self.w3.iter().zip(h2.iter()) {
+            out += w * h;
         }
 
         // The network is trained directly in centipawns (see tools/train.py).
@@ -271,12 +271,19 @@ mod tests {
 
     #[test]
     fn perspectives_mirror_each_other() {
-        // The same piece is index f from one perspective and the colour-flipped
-        // index from the other.
-        let f_white = feature_index(Color::White, Color::Black, PieceType::Rook, 12);
-        let f_black = feature_index(Color::Black, Color::Black, PieceType::Rook, 12);
-        assert_eq!(f_white, (1 * 6 + 3) * 64 + 12);
-        assert_eq!(f_black, (0 * 6 + 3) * 64 + 12);
+        // The same piece is "theirs" from one perspective and "ours" from the
+        // other; the relative colour bit is the whole difference.
+        const OURS: usize = 0;
+        const THEIRS: usize = 1;
+        let rook = PieceType::Rook.index();
+        let square = 12;
+
+        let f_white = feature_index(Color::White, Color::Black, PieceType::Rook, square);
+        let f_black = feature_index(Color::Black, Color::Black, PieceType::Rook, square);
+
+        assert_eq!(f_white, (THEIRS * NUM_PIECE_TYPES + rook) * 64 + square);
+        assert_eq!(f_black, (OURS * NUM_PIECE_TYPES + rook) * 64 + square);
+        assert_eq!(f_white - f_black, NUM_PIECE_TYPES * 64);
     }
 
     #[test]

@@ -225,10 +225,10 @@ fn build() -> Tables {
     let mut rng = SplitMix64::new(0x9E3779B97F4A7C15);
     for p in 0..NUM_PIECES {
         for s in 0..64 {
-            t.zobrist_piece[p][s] = rng.next();
+            t.zobrist_piece[p][s] = rng.next_u64();
         }
     }
-    t.zobrist_side = rng.next();
+    t.zobrist_side = rng.next_u64();
 
     t
 }
@@ -298,7 +298,7 @@ impl SplitMix64 {
         SplitMix64(seed)
     }
     #[inline(always)]
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
@@ -310,12 +310,12 @@ impl SplitMix64 {
         if n == 0 {
             0
         } else {
-            (self.next() % n as u64) as usize
+            (self.next_u64() % n as u64) as usize
         }
     }
     #[inline(always)]
     pub fn unit(&mut self) -> f32 {
-        (self.next() >> 40) as f32 / (1u64 << 24) as f32
+        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
     }
 }
 

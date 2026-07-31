@@ -60,9 +60,10 @@ pub const INFINITY: i32 = 32_000;
 // Evaluator
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum Evaluator {
     /// Phase 2 hand evaluation. Also generation 0 of the training loop.
+    #[default]
     Hand,
     /// Phase 4 NNUE.
     Nnue(std::sync::Arc<Network>),
@@ -81,12 +82,6 @@ impl Evaluator {
             Evaluator::Hand => "hand",
             Evaluator::Nnue(_) => "nnue",
         }
-    }
-}
-
-impl Default for Evaluator {
-    fn default() -> Self {
-        Evaluator::Hand
     }
 }
 

@@ -53,17 +53,18 @@ pub struct SymmetryTables {
 
 fn build() -> SymmetryTables {
     let mut perm = [[0u8; 64]; NUM_SYMMETRIES];
-    for i in 0..NUM_SYMMETRIES {
-        for s in 0..64 {
+    for (i, row) in perm.iter_mut().enumerate() {
+        for (s, slot) in row.iter_mut().enumerate() {
             let (r, c) = apply_coords(i, rank_of(s), file_of(s));
-            perm[i][s] = sq(r, c) as u8;
+            *slot = sq(r, c) as u8;
         }
     }
+    // Find each element's inverse by brute force — the group has eight members.
     let mut inverse = [0usize; NUM_SYMMETRIES];
-    for i in 0..NUM_SYMMETRIES {
-        for j in 0..NUM_SYMMETRIES {
-            if (0..64).all(|s| perm[j][perm[i][s] as usize] as usize == s) {
-                inverse[i] = j;
+    for (i, inv) in inverse.iter_mut().enumerate() {
+        for (j, candidate) in perm.iter().enumerate() {
+            if (0..64).all(|s| candidate[perm[i][s] as usize] as usize == s) {
+                *inv = j;
                 break;
             }
         }
@@ -159,20 +160,18 @@ mod tests {
 
     #[test]
     fn permutations_are_bijections_and_form_a_group() {
-        for i in 0..NUM_SYMMETRIES {
+        for (i, name) in SYMMETRY_NAMES.iter().enumerate() {
             let seen: HashSet<u8> = SYM.perm[i].iter().copied().collect();
-            assert_eq!(seen.len(), 64, "{} is not a bijection", SYMMETRY_NAMES[i]);
+            assert_eq!(seen.len(), 64, "{name} is not a bijection");
         }
         // Closure: composing any two elements yields another element.
-        for i in 0..NUM_SYMMETRIES {
-            for j in 0..NUM_SYMMETRIES {
+        for (i, a) in SYMMETRY_NAMES.iter().enumerate() {
+            for (j, b) in SYMMETRY_NAMES.iter().enumerate() {
                 let composed: Vec<u8> =
                     (0..64).map(|s| SYM.perm[j][SYM.perm[i][s] as usize]).collect();
                 assert!(
-                    (0..NUM_SYMMETRIES).any(|k| SYM.perm[k].as_slice() == composed.as_slice()),
-                    "{} o {} left the group",
-                    SYMMETRY_NAMES[j],
-                    SYMMETRY_NAMES[i]
+                    SYM.perm.iter().any(|p| p.as_slice() == composed.as_slice()),
+                    "{b} o {a} left the group"
                 );
             }
         }
@@ -188,19 +187,13 @@ mod tests {
     fn movegen_commutes_with_symmetry() {
         for pos in random_positions(40, 4242) {
             let base: HashSet<Move> = generate_vec(&pos, GenMode::All).into_iter().collect();
-            for i in 0..NUM_SYMMETRIES {
+            for (i, name) in SYMMETRY_NAMES.iter().enumerate() {
                 let tpos = transform_position(i, &pos);
                 assert!(tpos.validate().is_ok());
                 let got: HashSet<Move> = generate_vec(&tpos, GenMode::All).into_iter().collect();
                 let want: HashSet<Move> =
                     base.iter().map(|&m| transform_move(i, m)).collect();
-                assert_eq!(
-                    got,
-                    want,
-                    "{} broke movegen on {}",
-                    SYMMETRY_NAMES[i],
-                    pos.to_fen()
-                );
+                assert_eq!(got, want, "{name} broke movegen on {}", pos.to_fen());
             }
         }
     }
@@ -213,13 +206,12 @@ mod tests {
             for _ in 0..8 {
                 let m = moves[rng.below(moves.len())];
                 let (child, _) = pos.after(m);
-                for i in 0..NUM_SYMMETRIES {
+                for (i, name) in SYMMETRY_NAMES.iter().enumerate() {
                     let (tchild, _) = transform_position(i, &pos).after(transform_move(i, m));
                     let expect = transform_position(i, &child);
                     assert_eq!(
                         tchild.pieces, expect.pieces,
-                        "{} broke make_move for {m} on {}",
-                        SYMMETRY_NAMES[i],
+                        "{name} broke make_move for {m} on {}",
                         pos.to_fen()
                     );
                 }
@@ -231,12 +223,11 @@ mod tests {
     fn evaluation_is_symmetry_invariant() {
         for pos in random_positions(40, 1234) {
             let base = evaluate_white(&pos);
-            for i in 0..NUM_SYMMETRIES {
+            for (i, name) in SYMMETRY_NAMES.iter().enumerate() {
                 assert_eq!(
                     evaluate_white(&transform_position(i, &pos)),
                     base,
-                    "{} changed the evaluation of {}",
-                    SYMMETRY_NAMES[i],
+                    "{name} changed the evaluation of {}",
                     pos.to_fen()
                 );
             }

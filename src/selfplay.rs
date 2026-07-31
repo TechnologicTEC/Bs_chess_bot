@@ -191,7 +191,7 @@ pub fn run(cfg: &SelfPlayConfig, out: Option<&Path>, progress: bool) -> std::io:
             }
 
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if progress && (n % 50 == 0 || n == total) {
+            if progress && (n.is_multiple_of(50) || n == total) {
                 eprintln!("  {n}/{total} games");
             }
             stats

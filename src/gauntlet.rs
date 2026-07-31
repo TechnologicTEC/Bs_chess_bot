@@ -177,11 +177,11 @@ pub fn round_robin(pool: &[Participant], pairs: usize, seed: u64) -> Vec<(String
             let s = play_match(&pool[i], &pool[j], pairs, seed ^ ((i * 31 + j) as u64));
             println!("{}", s.summary(&pool[i].name, &pool[j].name));
             totals[i].merge(&s);
-            let mut flipped = MatchScore::default();
-            flipped.wins = s.losses;
-            flipped.losses = s.wins;
-            flipped.draws = s.draws;
-            totals[j].merge(&flipped);
+            totals[j].merge(&MatchScore {
+                wins: s.losses,
+                losses: s.wins,
+                draws: s.draws,
+            });
         }
     }
     pool.iter()

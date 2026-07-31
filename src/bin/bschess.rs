@@ -221,7 +221,7 @@ fn eval_fens(net_path: Option<&str>) -> i32 {
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
-        let fen = line.trim();
+        let fen = line.trim_start_matches('\u{feff}').trim();
         if fen.is_empty() || fen.starts_with('#') {
             continue;
         }
@@ -257,7 +257,9 @@ fn main() {
         print!("> ");
         let _ = std::io::stdout().flush();
         let Some(Ok(line)) = lines.next() else { break };
-        let line = line.trim();
+        // Strip a UTF-8 BOM: piping a script into the engine on Windows prefixes
+        // one to the first line, which would otherwise look like a bad command.
+        let line = line.trim_start_matches('\u{feff}').trim();
         if line.is_empty() {
             continue;
         }
