@@ -91,7 +91,7 @@ fn main() {
             Evaluator::Hand,
             limits.clone(),
         )];
-        for p in &pool {
+        for p in pool.iter().filter(|p| p.as_str() != "hand") {
             participants.push(Participant::new(name_of(p), load(p), limits.clone()));
         }
         println!(
@@ -117,18 +117,17 @@ fn main() {
         return;
     }
 
-    let pa = match &a {
-        Some(p) => Participant::new(name_of(p), load(p), limits.clone()),
-        None => Participant::new(format!("hand-d{depth}"), Evaluator::Hand, limits.clone()),
-    };
-    let pb = match &b {
-        Some(p) => Participant::new(name_of(p), load(p), limits.clone()),
-        None => Participant::new(
-            format!("hand-d{depth}-baseline"),
+    // `hand` names the Phase 2 baseline; anything else is a path to a network.
+    let participant = |arg: &Option<String>, fallback: &str| match arg.as_deref() {
+        None | Some("hand") => Participant::new(
+            format!("hand-d{depth}{fallback}"),
             Evaluator::Hand,
             limits.clone(),
         ),
+        Some(p) => Participant::new(name_of(p), load(p), limits.clone()),
     };
+    let pa = participant(&a, "");
+    let pb = participant(&b, "-baseline");
 
     println!(
         "{} vs {} — {} games ({} openings, both colours), {} threads\n",

@@ -202,8 +202,48 @@ commands:
 
 // ---------------------------------------------------------------------------
 
+/// Non-interactive: read FENs on stdin, print `fen<TAB>eval_cp` for each.
+///
+/// This exists so `tools/verify_net.py` can check that the exported weights
+/// evaluate identically here and in PyTorch. A transposed weight matrix would
+/// otherwise be completely silent — the engine would just play badly.
+fn eval_fens(net_path: Option<&str>) -> i32 {
+    let evaluator = match net_path {
+        Some(p) => match Network::load(p) {
+            Ok(n) => Evaluator::Nnue(Arc::new(n)),
+            Err(e) => {
+                eprintln!("could not load {p}: {e}");
+                return 2;
+            }
+        },
+        None => Evaluator::Hand,
+    };
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        let fen = line.trim();
+        if fen.is_empty() || fen.starts_with('#') {
+            continue;
+        }
+        match Position::from_fen(fen) {
+            Ok(p) => println!("{fen}\t{}", evaluator.eval(&p)),
+            Err(e) => {
+                eprintln!("bad FEN '{fen}': {e}");
+                return 2;
+            }
+        }
+    }
+    0
+}
+
 fn main() {
     bschess::init();
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--eval-fens") {
+        std::process::exit(eval_fens(args.get(i + 1).map(|s| s.as_str())));
+    }
+
     let mut s = Session::new();
 
     println!("Bullshit Chess engine — operator mode.");
