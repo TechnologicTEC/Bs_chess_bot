@@ -1,15 +1,15 @@
-//! Perft — the Phase 1 gate.
+﻿//! Perft â€” the Phase 1 gate.
 //!
 //! **Definition** (must match `ref/reference.py` exactly):
 //!
 //! ```text
 //! perft(pos, 0) = 1
-//! perft(pos, d) = 0                                    if pos is terminal (spec §3)
+//! perft(pos, d) = 0                                    if pos is terminal (spec Â§3)
 //! perft(pos, d) = sum over legal moves of perft(child, d-1)   otherwise
 //! ```
 //!
 //! Terminal positions contribute nothing at `d > 0` because no move may be played
-//! from them. Always use `GenMode::All` — restricted teleport generation is a
+//! from them. Always use `GenMode::All` â€” restricted teleport generation is a
 //! search heuristic, not a rule.
 
 use crate::movegen::{generate, GenMode, MoveList};
@@ -28,7 +28,7 @@ pub fn perft(pos: &Position, depth: u32) -> u64 {
     if depth == 1 {
         // Bulk counting is only valid when every child is a leaf; children that
         // are terminal still count as reached positions at depth 1.
-        return list.len as u64;
+        return list.len() as u64;
     }
     let mut total = 0;
     for &mv in list.as_slice() {
@@ -83,7 +83,7 @@ mod tests {
         let pos = Position::startpos();
         let mut list = MoveList::new();
         generate(&pos, GenMode::All, &mut list);
-        assert_eq!(perft(&pos, 1), list.len as u64);
+        assert_eq!(perft(&pos, 1), list.len() as u64);
     }
 
     #[test]

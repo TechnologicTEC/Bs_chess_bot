@@ -24,51 +24,53 @@ pub enum GenMode {
     Captures,
 }
 
-#[derive(Clone)]
+/// Moves plus a parallel score array, kept in lockstep.
+///
+/// Heap-backed rather than a pair of inline `[_; 512]` arrays. Inline arrays put
+/// ~3 KB on the stack at *every* search node and zero it on construction, which
+/// costs more than the move generation itself and wrecks cache locality once the
+/// recursion is deep. The search keeps one list per ply and reuses it, so after
+/// the first visit these `Vec`s never allocate again.
+#[derive(Clone, Default)]
 pub struct MoveList {
-    pub moves: [Move; MAX_MOVES],
-    pub scores: [i32; MAX_MOVES],
-    pub len: usize,
-}
-
-impl Default for MoveList {
-    fn default() -> Self {
-        MoveList::new()
-    }
+    pub moves: Vec<Move>,
+    pub scores: Vec<i32>,
 }
 
 impl MoveList {
     pub fn new() -> MoveList {
         MoveList {
-            moves: [Move::NONE; MAX_MOVES],
-            scores: [0; MAX_MOVES],
-            len: 0,
+            moves: Vec::with_capacity(MAX_MOVES),
+            scores: Vec::with_capacity(MAX_MOVES),
         }
     }
     #[inline(always)]
     pub fn push(&mut self, m: Move) {
-        debug_assert!(self.len < MAX_MOVES, "move list overflow");
-        if self.len < MAX_MOVES {
-            self.moves[self.len] = m;
-            self.len += 1;
-        }
+        debug_assert!(self.moves.len() < MAX_MOVES, "move list overflow");
+        self.moves.push(m);
+        self.scores.push(0);
+    }
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.moves.len()
     }
     #[inline(always)]
     pub fn clear(&mut self) {
-        self.len = 0;
+        self.moves.clear();
+        self.scores.clear();
     }
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.moves.is_empty()
     }
     pub fn as_slice(&self) -> &[Move] {
-        &self.moves[..self.len]
+        &self.moves
     }
     pub fn contains(&self, m: Move) -> bool {
-        self.as_slice().contains(&m)
+        self.moves.contains(&m)
     }
     pub fn to_vec(&self) -> Vec<Move> {
-        self.as_slice().to_vec()
+        self.moves.clone()
     }
 }
 

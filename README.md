@@ -175,9 +175,25 @@ On a 22-core laptop, release build:
 
 | Measurement | Value |
 |---|---|
-| Search from the start position | depth 7 in 1.6 s, 3.9M nodes/s (one thread) |
-| Self-play, depth 5 | ~257 positions/s, 31M nodes/s across all cores |
+| Search from the start position | depth 7 in ~2 s, 3.9M nodes/s (one thread) |
+| Self-play, depth 5 | ~260 positions/s, 0.25 s/game across all cores |
+| Self-play, depth 6 | ~83 positions/s, 1.3 s/game across all cores |
 | Perft, start position depths 1–4 | 6.97e9 nodes in 1.1 s (all cores) |
+
+Self-play throughput is very sensitive to transposition table size, and in the
+non-obvious direction. Measured at depth 6 across 22 threads:
+
+| TT per game | Positions/s |
+|---|---|
+| 1 MB | 16 |
+| 8 MB | 53 |
+| 32 MB | **78** |
+| 64 MB | 76 |
+
+Starving the table costs far more in re-searched nodes than it saves in cache
+pressure — 1 MB is nearly five times slower than 32 MB, even though 22 threads at
+32 MB is a 700 MB working set. The default is 32 MB; lower it with `--tt` if
+memory is tight. This one default was worth a 1.5x speedup at depth 6.
 
 Evaluation is `f32` with a full accumulator refresh at every node. NNUE's usual incremental
 update is a bad fit here — one blast changes up to ten features, and captures are exactly

@@ -40,6 +40,7 @@ fn main() {
             "--out" => out = Some(PathBuf::from(value(&mut i))),
             "--net" => net_path = Some(value(&mut i)),
             "--threads" => threads = value(&mut i).parse().ok(),
+            "--tt" => cfg.tt_megabytes = value(&mut i).parse().unwrap_or(cfg.tt_megabytes),
             "--all-positions" => cfg.quiet_only = false,
             "--help" | "-h" => {
                 println!(

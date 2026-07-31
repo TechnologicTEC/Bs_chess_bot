@@ -1,4 +1,4 @@
-//! Alpha-beta search (build plan, Phase 2).
+﻿//! Alpha-beta search (build plan, Phase 2).
 //!
 //! Iterative deepening, transposition table, killer moves, history heuristic,
 //! late move reductions, aspiration windows, and quiescence over all captures.
@@ -200,7 +200,7 @@ impl SearchResult {
 pub struct SearchOptions {
     pub evaluator: Evaluator,
     pub tt_megabytes: usize,
-    /// Off by default — see the module note.
+    /// Off by default â€” see the module note.
     pub use_null_move: bool,
     pub use_lmr: bool,
     /// Emit `info depth ...` lines to stdout during iterative deepening.
@@ -234,6 +234,9 @@ pub struct Searcher {
     node_limit: Option<u64>,
     stop: Arc<AtomicBool>,
     aborted: bool,
+    /// One move list per ply, reused across nodes. Building a fresh list at every
+    /// node was costing more than generating the moves into it.
+    lists: Vec<MoveList>,
 }
 
 impl Searcher {
@@ -250,6 +253,7 @@ impl Searcher {
             node_limit: None,
             stop: Arc::new(AtomicBool::new(false)),
             aborted: false,
+            lists: (0..MAX_PLY + 1).map(|_| MoveList::new()).collect(),
         }
     }
 
@@ -290,7 +294,7 @@ impl Searcher {
         let max_depth = limits.depth.unwrap_or(MAX_PLY as i32 - 8);
         let mut result = SearchResult::default();
 
-        // A legal move always exists (spec §1.4), so seed with the first one to
+        // A legal move always exists (spec Â§1.4), so seed with the first one to
         // guarantee we never return a null move even if depth 1 is interrupted.
         let mut root_moves = MoveList::new();
         generate(pos, GenMode::Search, &mut root_moves);
@@ -444,7 +448,7 @@ impl Searcher {
         }
         self.seldepth = self.seldepth.max(ply as i32);
 
-        // Terminal check first — spec §3 conditions are evaluated on the position
+        // Terminal check first â€” spec Â§3 conditions are evaluated on the position
         // as it stands, and a game that is over has no moves worth generating.
         if let Some(r) = pos.result() {
             return terminal_score(r, pos.side, ply);
@@ -497,10 +501,13 @@ impl Searcher {
         }
 
         // --- move generation and ordering ------------------------------------
-        let mut list = MoveList::new();
+        // Borrowed out of the per-ply pool and handed back before every return.
+        // The recursive calls need `&mut self`, so it cannot stay borrowed in place.
+        let mut list = std::mem::take(&mut self.lists[ply]);
         generate(pos, GenMode::Search, &mut list);
-        debug_assert!(!list.is_empty(), "spec §1.4 violated at {}", pos.to_fen());
+        debug_assert!(!list.is_empty(), "spec Â§1.4 violated at {}", pos.to_fen());
         if list.is_empty() {
+            self.lists[ply] = list;
             return static_eval;
         }
         self.score_moves(pos, &mut list, tt_move, ply);
@@ -509,13 +516,13 @@ impl Searcher {
         let mut best_move = list.moves[0];
         let mut bound = Bound::Upper;
 
-        for i in 0..list.len {
+        for i in 0..list.len() {
             pick_best(&mut list, i);
             let mv = list.moves[i];
             let (child, _) = pos.after(mv);
 
             // Late move reductions: quiet, late, non-tactical moves get a shallower
-            // look first. Captures are never reduced — one blast decides games.
+            // look first. Captures are never reduced â€” one blast decides games.
             let mut score;
             let quiet = !is_capture(pos, mv);
             let mut new_depth = depth - 1;
@@ -534,6 +541,7 @@ impl Searcher {
             }
 
             if self.aborted {
+                self.lists[ply] = list;
                 return 0;
             }
 
@@ -555,13 +563,14 @@ impl Searcher {
             }
         }
 
+        self.lists[ply] = list;
         self.tt
             .store(key, best_move, to_tt_score(best_score, ply), depth, bound);
         best_score
     }
 
     // -----------------------------------------------------------------------
-    // Quiescence — spec §5.6 exact deltas do the pruning
+    // Quiescence â€” spec Â§5.6 exact deltas do the pruning
     // -----------------------------------------------------------------------
 
     fn quiescence(&mut self, pos: &Position, mut alpha: i32, beta: i32, ply: usize) -> i32 {
@@ -586,24 +595,25 @@ impl Searcher {
             alpha = stand_pat;
         }
 
-        let mut list = MoveList::new();
+        let mut list = std::mem::take(&mut self.lists[ply]);
         generate(pos, GenMode::Captures, &mut list);
         if list.is_empty() {
+            self.lists[ply] = list;
             return stand_pat;
         }
-        for i in 0..list.len {
+        for i in 0..list.len() {
             list.scores[i] = move_delta(pos, list.moves[i]);
         }
 
         let mut best = stand_pat;
-        for i in 0..list.len {
+        for i in 0..list.len() {
             pick_best(&mut list, i);
             let mv = list.moves[i];
             let delta = list.scores[i];
 
             // Prune captures that lose material outright. A losing detonation can
-            // still be right for the trailing side (spec §5.5), but that is a
-            // strategic choice for the main search, not for quiescence — except
+            // still be right for the trailing side (spec Â§5.5), but that is a
+            // strategic choice for the main search, not for quiescence â€” except
             // when it removes a king, which `delta` scores enormously.
             if delta < 0 && stand_pat + delta + 200 <= alpha {
                 continue;
@@ -612,6 +622,7 @@ impl Searcher {
             let (child, _) = pos.after(mv);
             let score = -self.quiescence(&child, -beta, -alpha, ply + 1);
             if self.aborted {
+                self.lists[ply] = list;
                 return 0;
             }
             if score > best {
@@ -624,6 +635,7 @@ impl Searcher {
                 break;
             }
         }
+        self.lists[ply] = list;
         best
     }
 
@@ -633,13 +645,13 @@ impl Searcher {
 
     fn score_moves(&self, pos: &Position, list: &mut MoveList, tt_move: Move, ply: usize) {
         let killers = self.killers[ply.min(MAX_PLY - 1)];
-        for i in 0..list.len {
+        for i in 0..list.len() {
             let mv = list.moves[i];
             list.scores[i] = if mv == tt_move {
                 1 << 24
             } else {
-                // Exact material swing — strictly better information than a real
-                // chess engine has at ordering time (spec §5.6). Scaled well above
+                // Exact material swing â€” strictly better information than a real
+                // chess engine has at ordering time (spec Â§5.6). Scaled well above
                 // history so that any real capture outranks any quiet move.
                 let delta = move_delta(pos, mv);
                 if delta != 0 {
@@ -668,8 +680,8 @@ impl Searcher {
 ///
 /// `Position::key` is pure position identity, which is what we want almost
 /// everywhere. But two paths of different lengths can reach the same position, so
-/// the same key can occur at different plies within one search — and near the
-/// spec §4 cap the ply changes what the position is worth, because material
+/// the same key can occur at different plies within one search â€” and near the
+/// spec Â§4 cap the ply changes what the position is worth, because material
 /// adjudication is about to fire. Fold the ply in only inside that window, so the
 /// table stays shared for the rest of the game.
 const PLY_SENSITIVE_WINDOW: u16 = 32;
@@ -683,12 +695,12 @@ fn tt_key(pos: &Position) -> u64 {
     }
 }
 
-/// Selection sort one element at a time — cheaper than sorting the whole list,
+/// Selection sort one element at a time â€” cheaper than sorting the whole list,
 /// because a beta cutoff usually lands in the first few moves.
 #[inline]
 fn pick_best(list: &mut MoveList, from: usize) {
     let mut best = from;
-    for j in from + 1..list.len {
+    for j in from + 1..list.len() {
         if list.scores[j] > list.scores[best] {
             best = j;
         }
@@ -699,7 +711,7 @@ fn pick_best(list: &mut MoveList, from: usize) {
     }
 }
 
-/// Spec §3: a finished game scores from the point of view of the side to move at
+/// Spec Â§3: a finished game scores from the point of view of the side to move at
 /// this node. Wins are discounted by ply so the search prefers the quicker one.
 #[inline]
 pub fn terminal_score(r: GameResult, stm: Color, ply: usize) -> i32 {
@@ -743,7 +755,7 @@ pub fn best_move(pos: &Position, limits: &SearchLimits, ev: Evaluator) -> Search
     s.search(pos, limits)
 }
 
-/// Remaining plies before the spec §4 cap adjudicates the game.
+/// Remaining plies before the spec Â§4 cap adjudicates the game.
 pub fn plies_left(pos: &Position) -> i32 {
     PLY_CAP as i32 - pos.ply as i32
 }

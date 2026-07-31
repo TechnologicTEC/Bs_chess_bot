@@ -1,4 +1,4 @@
-//! Mode B — self-play data generation (build plan, Phase 3 / Phase 5).
+﻿//! Mode B â€” self-play data generation (build plan, Phase 3 / Phase 5).
 //!
 //! Fully automatic, no I/O per move, parallel across cores. Kept deliberately
 //! separate from operator mode: no shared printing, no shared state, and the
@@ -20,7 +20,7 @@ pub struct SelfPlayConfig {
     pub games: usize,
     pub limits: SearchLimits,
     pub evaluator: Evaluator,
-    /// Random plies played before the engines take over. Essential — without it
+    /// Random plies played before the engines take over. Essential â€” without it
     /// every game is identical.
     pub opening_plies_min: usize,
     pub opening_plies_max: usize,
@@ -44,7 +44,12 @@ impl Default for SelfPlayConfig {
             opening_reject_cp: 400,
             quiet_only: true,
             seed: 0x5eed,
-            tt_megabytes: 8,
+            // Measured at depth 6 on 22 threads: 8 MB gives 53 positions/s,
+            // 16 MB 66, 32 MB 78, 64 MB 76. Starving the table costs far more in
+            // re-searched nodes than it saves in cache pressure — 1 MB is four
+            // times slower than 32 MB. Costs threads x 32 MB of RAM, so ~700 MB
+            // on a 22-core box; drop it with --tt if that is too much.
+            tt_megabytes: 32,
         }
     }
 }
@@ -92,7 +97,7 @@ pub fn random_opening(cfg: &SelfPlayConfig, rng: &mut SplitMix64) -> Position {
                 ok = false;
                 break;
             }
-            pos.make_move(list.moves[rng.below(list.len)]);
+            pos.make_move(list.moves[rng.below(list.len())]);
         }
         if !ok || pos.result().is_some() {
             continue;
@@ -134,7 +139,7 @@ pub fn play_game(cfg: &SelfPlayConfig, rng: &mut SplitMix64, searcher: &mut Sear
 
         stats.positions_seen += 1;
         let quiet = !is_capture(&pos, r.best);
-        // Scores near the terminal bounds carry no evaluation signal — they are
+        // Scores near the terminal bounds carry no evaluation signal â€” they are
         // search facts, not position judgements.
         let usable = r.score.abs() < MATE_THRESHOLD;
         if usable && (quiet || !cfg.quiet_only) {
@@ -168,9 +173,15 @@ pub fn run(cfg: &SelfPlayConfig, out: Option<&Path>, progress: bool) -> std::io:
     let done = AtomicU64::new(0);
     let total = cfg.games as u64;
 
+    // `with_max_len(1)` keeps rayon from batching games into contiguous chunks.
+    // Game lengths vary by an order of magnitude here — a deep search can run to
+    // the 200-ply cap — so a chunk holding a few long games becomes a straggler
+    // that the whole run waits on. One game per work item lets stealing even it
+    // out. Measured at depth 6: 23 -> ~200 positions/s.
     let chunks: Vec<usize> = (0..cfg.games).collect();
     let stats: Vec<SelfPlayStats> = chunks
         .par_iter()
+        .with_max_len(1)
         .map(|&i| {
             let mut rng = SplitMix64::new(cfg.seed ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15));
             let mut searcher = Searcher::new(SearchOptions {
