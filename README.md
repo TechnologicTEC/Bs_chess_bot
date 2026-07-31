@@ -83,10 +83,10 @@ positions. Current status:
 | Check | Result |
 |---|---|
 | Start position, depths 1–3 | 292 / 84,165 / 24,169,988 — exact agreement |
-| Start position, depth 4 (engine only) | 6,972,120,956 |
+| Start position, depth 4 | 6,972,120,956 — agrees on every one of the 292 root moves |
 | Curated suite (`tests/perft_suite.txt`) | 49 / 49 counts agree |
 | Random suite (`tests/perft_random_suite.txt`) | 322 / 322 counts agree, 181M nodes |
-| Spec §7 checklist (`tests/rules.rs`) | 30 / 30 |
+| Spec §7 checklist (`tests/rules.rs`) | 31 / 31 |
 
 The curated suite covers blast clipping at edges, knight paths crossing kings, queen sweep
 stops and every terminal condition. The random suite is 150 positions drawn from real play —
@@ -95,6 +95,15 @@ curated positions only prove the rules you thought to test.
 Regenerate the random suite with `target/release/perft --random 150 6 <seed>`. Depth is
 chosen per position from a movegen-call budget, so sparse boards go deep and crowded ones
 stay shallow.
+
+Depth 4 from the start position is 24M subtree expansions, which is hours single-threaded in
+Python. `--jobs` fans the 292 root subtrees across processes and brings it down to minutes:
+
+```sh
+python ref/reference.py --depth 4 --divide --jobs 0 > ref4.txt   # 0 = one per core
+target/release/perft 4 --divide > engine4.txt
+diff ref4.txt engine4.txt
+```
 
 **Do not proceed past a mismatch.** A movegen bug found after two weeks of training is two
 weeks lost, and you cannot detect one by watching games.
@@ -168,7 +177,7 @@ On a 22-core laptop, release build:
 |---|---|
 | Search from the start position | depth 7 in 1.6 s, 3.9M nodes/s (one thread) |
 | Self-play, depth 5 | ~257 positions/s, 31M nodes/s across all cores |
-| Perft, start position depth 4 | 6.97e9 nodes |
+| Perft, start position depths 1–4 | 6.97e9 nodes in 1.1 s (all cores) |
 
 Evaluation is `f32` with a full accumulator refresh at every node. NNUE's usual incremental
 update is a bad fit here — one blast changes up to ten features, and captures are exactly
@@ -257,7 +266,7 @@ centipawns puts every gradient through a 1/400 divisor and the network never mov
 ## Testing
 
 ```sh
-cargo test                 # 72 tests; debug build keeps the make_move assertions live
+cargo test                 # 76 tests; debug build keeps the make_move assertions live
 cargo test --release
 python tools/perft_gate.py
 ```

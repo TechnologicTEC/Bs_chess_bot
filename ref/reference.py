@@ -315,11 +315,31 @@ def move_name(move):
     return square_name(fr, fc) + square_name(tr, tc)
 
 
-def run_divide(pos, depth):
-    rows = []
-    for m in pos.moves():
-        n = 1 if depth <= 1 else perft(pos.make(m), depth - 1)
-        rows.append((move_name(m), n))
+def _subtree(job):
+    """Worker entry point: (fen, move_name, depth) -> (move_name, nodes)."""
+    fen, name, depth = job
+    return name, perft(Position.from_fen(fen), depth)
+
+
+def run_divide(pos, depth, jobs=1):
+    """Per-root-move breakdown. `jobs > 1` fans the root moves across processes,
+    which is what makes a depth-4 check from the start position take minutes
+    rather than hours — 292 independent subtrees is embarrassingly parallel."""
+    moves = pos.moves()
+    if depth <= 1:
+        rows = [(move_name(m), 1) for m in moves]
+    elif jobs > 1:
+        import multiprocessing
+
+        work = [(pos.make(m).to_fen(), move_name(m), depth - 1) for m in moves]
+        with multiprocessing.Pool(jobs) as pool:
+            rows = []
+            for i, row in enumerate(pool.imap_unordered(_subtree, work), 1):
+                rows.append(row)
+                print("  %d/%d subtrees" % (i, len(work)), file=sys.stderr)
+    else:
+        rows = [(move_name(m), perft(pos.make(m), depth - 1)) for m in moves]
+
     for name, n in sorted(rows):
         print("%s\t%d" % (name, n))
     print("# total\t%d" % sum(n for _, n in rows), file=sys.stderr)
@@ -356,7 +376,13 @@ def main():
     ap.add_argument("--depth", type=int, default=3)
     ap.add_argument("--divide", action="store_true")
     ap.add_argument("--suite", default=None)
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="processes to fan --divide across (0 = one per core)")
     args = ap.parse_args()
+
+    if args.jobs == 0:
+        import multiprocessing
+        args.jobs = multiprocessing.cpu_count()
 
     sys.setrecursionlimit(10000)
 
@@ -369,7 +395,7 @@ def main():
     print("fen %s" % pos.to_fen(), file=sys.stderr)
 
     if args.divide:
-        run_divide(pos, args.depth)
+        run_divide(pos, args.depth, jobs=args.jobs)
         return
 
     for d in range(1, args.depth + 1):

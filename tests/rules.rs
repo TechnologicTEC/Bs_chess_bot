@@ -449,6 +449,7 @@ fn perft_matches_the_independent_reference_implementation() {
         ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1", 1, 292),
         ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1", 2, 84_165),
         ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1", 3, 24_169_988),
+        ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b - - 1 1", 3, 24_169_988),
         // terminal positions expand to nothing
         ("4k3/8/8/8/8/8/8/4K3 w - - 0 1", 1, 0),
         ("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", 2, 0),
@@ -473,4 +474,20 @@ fn perft_matches_the_independent_reference_implementation() {
             "perft({depth}) mismatch for {fen}"
         );
     }
+}
+
+/// Depth 4 from the start position: 6,972,120,956 nodes, verified per root move
+/// against the reference. Regenerate the reference side with:
+///
+///   python ref/reference.py --depth 4 --divide --jobs 0
+///
+/// Parallel in the engine, so it costs about a second — but it is a 7-billion-node
+/// check, so it lives in its own test rather than the frozen table above.
+#[test]
+fn perft_depth_four_from_the_start_position() {
+    use bschess::perft::perft_parallel;
+    assert_eq!(
+        perft_parallel(&pos("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1"), 4),
+        6_972_120_956
+    );
 }
