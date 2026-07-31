@@ -1,0 +1,25 @@
+# Perft cross-check suite. Both the Rust engine and ref/reference.py read this
+# same file, so neither can drift onto a different set of positions.
+#
+# Format: depth<TAB>fen<TAB>label     (tabs, not spaces)
+#
+# Depths are chosen so the Python reference finishes in minutes. The start
+# position branches ~293 wide, so depth 3 there is 25M nodes and depth 4 is 7
+# billion — unreachable in Python. Sparse positions reach depth 4-5 instead, and
+# they are the ones that actually exercise the rules: blast clipping at edges,
+# knight paths crossing kings, queen sweep stops, and the terminal conditions.
+2	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1	startpos
+2	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b - - 1 1	startpos-black
+2	4k3/8/8/8/8/8/8/4K3 w - - 0 1	bare-kings-draw
+2	4k3/8/8/8/8/8/4P3/4K3 w - - 0 1	kings-and-pawn-draw
+4	4k3/8/8/3n4/8/8/8/R3K3 w - - 0 1	rook-vs-knight
+4	k7/8/8/8/8/8/8/K1Q5 w - - 0 1	queen-sweep
+4	7k/8/8/8/8/8/8/K6R w - - 0 1	corner-rook
+4	1n2k3/8/8/8/8/8/8/1N2K3 w - - 0 1	knights
+4	4k3/8/8/8/8/8/8/B3K2B w - - 0 1	bishops
+4	8/8/8/8/8/8/n7/R3K2k w - - 0 1	corner-detonation
+3	3qk3/8/8/8/8/8/8/3QK3 w - - 0 1	queens-facing
+3	4k3/8/8/8/8/8/4P3/R3K3 w - - 0 1	rook-pawn-king
+3	4k3/pp6/8/8/8/8/6PP/R3K2R w - - 0 1	pawns-and-rooks
+4	4k3/8/8/8/8/8/8/4K2Q b - - 0 1	black-to-move-sparse
+4	k6K/8/8/8/8/8/8/6qR w - - 0 1	kings-in-corners

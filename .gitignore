@@ -1,6 +1,7 @@
 /target
 /data
 /nets
+scratch_*
 *.bin
 __pycache__/
 *.pyc
