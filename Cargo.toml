@@ -1,0 +1,37 @@
+[package]
+name = "bschess"
+version = "0.1.0"
+edition = "2021"
+description = "Bullshit Chess engine — bitboard movegen, alpha-beta search, NNUE evaluation"
+
+[dependencies]
+rayon = "1.10"
+
+[lib]
+name = "bschess"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bschess"
+path = "src/bin/bschess.rs"
+
+[[bin]]
+name = "selfplay"
+path = "src/bin/selfplay.rs"
+
+[[bin]]
+name = "gauntlet"
+path = "src/bin/gauntlet.rs"
+
+[[bin]]
+name = "perft"
+path = "src/bin/perft.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+inherits = "release"

@@ -1,0 +1,302 @@
+//! NNUE evaluation (build plan, Phase 4).
+//!
+//! Topology: `768 -> 256` per perspective (weights shared) -> concatenate to 512
+//! -> `32` -> `32` -> `1`. ClippedReLU throughout. ~200k parameters.
+//!
+//! **No incremental accumulator updates.** The usual NNUE efficiency argument is
+//! that a chess move changes one or two features, so you patch the accumulator.
+//! Here a single blast changes up to ten features at once, and captures are
+//! exactly the nodes quiescence spends its time in. A full refresh is ~32 columns
+//! of 256 floats — cheap enough to do at every node. Measure before optimising.
+//!
+//! **No ply-count input.** The ply cap is handled by `Position::result`
+//! adjudicating at the horizon, so the network never needs to know the ply.
+//!
+//! Precision is `f32`. Quantise to int16/int8 only if profiling says evaluation
+//! rather than movegen is the bottleneck.
+
+use crate::eval::MATE_THRESHOLD;
+use crate::position::Position;
+use crate::types::*;
+use std::io::{Read, Write};
+use std::path::Path;
+
+pub const NUM_FEATURES: usize = 768; // 12 piece types x 64 squares
+pub const HL: usize = 256; // hidden layer per perspective
+pub const L1: usize = 32;
+pub const L2: usize = 32;
+
+const MAGIC: u32 = 0x4e_4e_53_42; // "BSNN" little-endian
+const VERSION: u32 = 1;
+
+/// Feature index for one piece, from `perspective`'s point of view.
+///
+/// The relative colour bit is all that is needed to canonicalise — there is no
+/// board flip, because no piece in this variant has a forward direction.
+#[inline(always)]
+pub fn feature_index(perspective: Color, piece_color: Color, pt: PieceType, square: usize) -> usize {
+    let relative = if piece_color == perspective { 0 } else { 1 };
+    (relative * NUM_PIECE_TYPES + pt.index()) * 64 + square
+}
+
+#[derive(Clone)]
+pub struct Network {
+    /// Feature transformer, row-major by feature so one feature is a contiguous
+    /// 256-float span.
+    pub ft_weight: Vec<f32>, // NUM_FEATURES * HL
+    pub ft_bias: Vec<f32>,   // HL
+    pub w1: Vec<f32>,        // L1 * (2 * HL)
+    pub b1: Vec<f32>,        // L1
+    pub w2: Vec<f32>,        // L2 * L1
+    pub b2: Vec<f32>,        // L2
+    pub w3: Vec<f32>,        // 1 * L2
+    pub b3: Vec<f32>,        // 1
+}
+
+#[inline(always)]
+fn crelu(x: f32) -> f32 {
+    x.clamp(0.0, 1.0)
+}
+
+impl Network {
+    pub fn zeroed() -> Network {
+        Network {
+            ft_weight: vec![0.0; NUM_FEATURES * HL],
+            ft_bias: vec![0.0; HL],
+            w1: vec![0.0; L1 * 2 * HL],
+            b1: vec![0.0; L1],
+            w2: vec![0.0; L2 * L1],
+            b2: vec![0.0; L2],
+            w3: vec![0.0; L2],
+            b3: vec![0.0; 1],
+        }
+    }
+
+    pub fn parameter_count(&self) -> usize {
+        self.ft_weight.len()
+            + self.ft_bias.len()
+            + self.w1.len()
+            + self.b1.len()
+            + self.w2.len()
+            + self.b2.len()
+            + self.w3.len()
+            + self.b3.len()
+    }
+
+    /// Full accumulator refresh for both perspectives.
+    pub fn accumulate(&self, pos: &Position, acc: &mut [[f32; HL]; 2]) {
+        for p in 0..2 {
+            acc[p].copy_from_slice(&self.ft_bias);
+        }
+        for p in 0..NUM_PIECES {
+            let board = pos.pieces[p];
+            if board == 0 {
+                continue;
+            }
+            let pc = piece_color(p);
+            let pt = piece_type_of(p);
+            for s in bits(board) {
+                for (pi, persp) in [Color::White, Color::Black].into_iter().enumerate() {
+                    let f = feature_index(persp, pc, pt, s);
+                    let col = &self.ft_weight[f * HL..(f + 1) * HL];
+                    let a = &mut acc[pi];
+                    for i in 0..HL {
+                        a[i] += col[i];
+                    }
+                }
+            }
+        }
+    }
+
+    /// Centipawns from the side to move's point of view.
+    pub fn evaluate(&self, pos: &Position) -> i32 {
+        let mut acc = [[0.0f32; HL]; 2];
+        self.accumulate(pos, &mut acc);
+
+        // Side to move's perspective goes first.
+        let (us, them) = match pos.side {
+            Color::White => (0, 1),
+            Color::Black => (1, 0),
+        };
+        let mut input = [0.0f32; 2 * HL];
+        for i in 0..HL {
+            input[i] = crelu(acc[us][i]);
+            input[HL + i] = crelu(acc[them][i]);
+        }
+
+        let mut h1 = [0.0f32; L1];
+        for (o, h) in h1.iter_mut().enumerate() {
+            let row = &self.w1[o * 2 * HL..(o + 1) * 2 * HL];
+            let mut sum = self.b1[o];
+            for i in 0..2 * HL {
+                sum += row[i] * input[i];
+            }
+            *h = crelu(sum);
+        }
+
+        let mut h2 = [0.0f32; L2];
+        for (o, h) in h2.iter_mut().enumerate() {
+            let row = &self.w2[o * L1..(o + 1) * L1];
+            let mut sum = self.b2[o];
+            for i in 0..L1 {
+                sum += row[i] * h1[i];
+            }
+            *h = crelu(sum);
+        }
+
+        let mut out = self.b3[0];
+        for i in 0..L2 {
+            out += self.w3[i] * h2[i];
+        }
+
+        // The network is trained directly in centipawns (see tools/train.py).
+        (out as i32).clamp(-MATE_THRESHOLD + 1, MATE_THRESHOLD - 1)
+    }
+
+    // -----------------------------------------------------------------------
+    // Serialisation
+    // -----------------------------------------------------------------------
+
+    pub fn load(path: impl AsRef<Path>) -> std::io::Result<Network> {
+        let mut buf = Vec::new();
+        std::fs::File::open(path)?.read_to_end(&mut buf)?;
+        Network::from_bytes(&buf)
+    }
+
+    pub fn from_bytes(buf: &[u8]) -> std::io::Result<Network> {
+        use std::io::{Error, ErrorKind};
+        let bad = |m: &str| Error::new(ErrorKind::InvalidData, m.to_string());
+        if buf.len() < 24 {
+            return Err(bad("network file too short"));
+        }
+        let u32_at = |o: usize| {
+            u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
+        };
+        if u32_at(0) != MAGIC {
+            return Err(bad("not a bschess network file"));
+        }
+        if u32_at(4) != VERSION {
+            return Err(bad("unsupported network version"));
+        }
+        let (nf, hl, l1, l2) = (
+            u32_at(8) as usize,
+            u32_at(12) as usize,
+            u32_at(16) as usize,
+            u32_at(20) as usize,
+        );
+        if (nf, hl, l1, l2) != (NUM_FEATURES, HL, L1, L2) {
+            return Err(bad(&format!(
+                "network shape {nf}x{hl}x{l1}x{l2} does not match the compiled \
+                 {NUM_FEATURES}x{HL}x{L1}x{L2}"
+            )));
+        }
+        let mut net = Network::zeroed();
+        let mut off = 24;
+        let read = |dst: &mut Vec<f32>, off: &mut usize| -> std::io::Result<()> {
+            let n = dst.len();
+            if buf.len() < *off + n * 4 {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "network file truncated".to_string(),
+                ));
+            }
+            for (i, slot) in dst.iter_mut().enumerate() {
+                let o = *off + i * 4;
+                *slot = f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]);
+            }
+            *off += n * 4;
+            Ok(())
+        };
+        read(&mut net.ft_weight, &mut off)?;
+        read(&mut net.ft_bias, &mut off)?;
+        read(&mut net.w1, &mut off)?;
+        read(&mut net.b1, &mut off)?;
+        read(&mut net.w2, &mut off)?;
+        read(&mut net.b2, &mut off)?;
+        read(&mut net.w3, &mut off)?;
+        read(&mut net.b3, &mut off)?;
+        Ok(net)
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+        f.write_all(&MAGIC.to_le_bytes())?;
+        f.write_all(&VERSION.to_le_bytes())?;
+        for v in [NUM_FEATURES, HL, L1, L2] {
+            f.write_all(&(v as u32).to_le_bytes())?;
+        }
+        for arr in [
+            &self.ft_weight,
+            &self.ft_bias,
+            &self.w1,
+            &self.b1,
+            &self.w2,
+            &self.b2,
+            &self.w3,
+            &self.b3,
+        ] {
+            for x in arr.iter() {
+                f.write_all(&x.to_le_bytes())?;
+            }
+        }
+        f.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parameter_count_is_about_200k() {
+        let n = Network::zeroed();
+        assert_eq!(n.parameter_count(), 768 * 256 + 256 + 32 * 512 + 32 + 32 * 32 + 32 + 32 + 1);
+        assert!((190_000..230_000).contains(&n.parameter_count()));
+    }
+
+    #[test]
+    fn feature_indices_are_distinct_and_in_range() {
+        let mut seen = std::collections::HashSet::new();
+        for c in [Color::White, Color::Black] {
+            for pt in ALL_PIECE_TYPES {
+                for s in 0..64 {
+                    let f = feature_index(Color::White, c, pt, s);
+                    assert!(f < NUM_FEATURES);
+                    assert!(seen.insert(f), "duplicate feature index {f}");
+                }
+            }
+        }
+        assert_eq!(seen.len(), NUM_FEATURES);
+    }
+
+    #[test]
+    fn perspectives_mirror_each_other() {
+        // The same piece is index f from one perspective and the colour-flipped
+        // index from the other.
+        let f_white = feature_index(Color::White, Color::Black, PieceType::Rook, 12);
+        let f_black = feature_index(Color::Black, Color::Black, PieceType::Rook, 12);
+        assert_eq!(f_white, (1 * 6 + 3) * 64 + 12);
+        assert_eq!(f_black, (0 * 6 + 3) * 64 + 12);
+    }
+
+    #[test]
+    fn save_load_roundtrip() {
+        let mut net = Network::zeroed();
+        for (i, w) in net.ft_weight.iter_mut().enumerate() {
+            *w = (i % 97) as f32 / 97.0;
+        }
+        net.b3[0] = 1.5;
+        let dir = std::env::temp_dir().join("bschess_net_test.bin");
+        net.save(&dir).unwrap();
+        let back = Network::load(&dir).unwrap();
+        assert_eq!(back.ft_weight, net.ft_weight);
+        assert_eq!(back.b3, net.b3);
+        std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn zero_network_evaluates_to_zero() {
+        let net = Network::zeroed();
+        assert_eq!(net.evaluate(&Position::startpos()), 0);
+    }
+}

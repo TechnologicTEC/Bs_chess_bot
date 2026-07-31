@@ -1,0 +1,7 @@
+/target
+/data
+/nets
+*.bin
+__pycache__/
+*.pyc
+.venv/

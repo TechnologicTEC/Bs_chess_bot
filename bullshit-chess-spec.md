@@ -14,6 +14,8 @@ Board: standard 8×8, standard starting position. Coordinates `(r, c)` with `r` 
 
 1.3. The game ends immediately when a king leaves the board, when only kings and pawns remain, or at the ply cap.
 
+1.4. **A side to move always has at least one legal move, so there is no stalemate and no pass move.** Proof: if a player is to move, their king is on the board. A king may capture friendly pieces, so occupancy never restricts it — the only limit is the board edge, and no square has all 8 neighbours off-board. Therefore the king always has a destination. Do not write stalemate handling; if your move generator ever returns an empty list, it is a bug.
+
 ---
 
 ## 2. Piece movement
@@ -64,6 +66,7 @@ A knight can capture a king by **passing over it**, not only by landing on it.
   - **The moving piece is also removed.** It does not survive its own explosion (atomic-chess semantics).
   - Net effect: the mover is spent, and up to 9 squares are emptied.
 - A rook or bishop may capture a friendly piece, and will destroy its own pieces caught in the blast.
+- **No chain reactions.** A rook or bishop destroyed by someone else's blast, knight sweep, or queen sweep does *not* explode in turn. Detonation is triggered only by that piece making its own capturing move. Resolution is single-step and simultaneous. *(This is a default, not something you stated — flip it if you'd rather have chain reactions, but be aware that chain reactions make single moves capable of clearing most of the board and would need a fixed-point resolution loop.)*
 
 Precompute 64 3×3 masks as `u64` bitboards.
 
@@ -216,3 +219,27 @@ Hand-verify each of these before writing any training code. Rule bugs here will 
 
 **Perft-style**
 - [ ] Node counts at depths 1–4 from the start position match between your engine and a slow, obviously-correct reference implementation written independently
+
+---
+
+## 8. Notation and cross-checking
+
+The two engines do not talk to each other directly — a human relays moves between them (see Phase 3 of the build plan). So no wire protocol is required. What *is* required is that both sides agree on notation and can verify they still agree on the board.
+
+**Move notation: long algebraic, `(from)(to)`.** Examples: `e2e4`, `a1h8`, `b1c3`. With no promotion, no castling and no en passant, every move in this variant fits in four characters with zero extensions. A pawn teleport is written exactly like any other move. Agree this with your friend before the first game; it costs nothing and is the one thing that would otherwise need renegotiating mid-match.
+
+**Position notation: standard FEN**, with `-` in both the castling-rights and en-passant fields, always. Put the ply count in the halfmove-clock field.
+
+### Board divergence is the real risk
+
+A single blast can remove up to nine pieces. If the two engines disagree about any rule — blast clipping at edges, whether an intermediate knight square was occupied, where a queen sweep stopped — the two boards silently diverge and neither player notices until the positions become obviously incompatible many moves later. By then the game is unrecoverable and you cannot tell whose engine was wrong.
+
+Mitigations, in order of value:
+
+1. **Print the full board after every move**, on both sides. Eyeball comparison catches divergence within one move.
+2. **Print the list of squares emptied by each capture**, not just the move played. This is what actually differs when rules disagree.
+3. **Support `fen` and `setfen` commands.** If you suspect divergence, both players print FEN and compare strings. If they differ, you can diagnose which move caused it and resync rather than abandoning the game.
+4. Share this spec document with your friend *before* either engine is written. Most divergence is prevented here rather than detected later.
+
+If you later decide to have the engines play each other unattended, UCI works unchanged given the notation above — `uci` / `isready` / `ucinewgame` / `position [startpos|fen] moves ...` / `go` / `bestmove` is sufficient, and you would add a small driver that owns the rules and adjudicates, since no existing UCI GUI understands king-capture termination.
+
