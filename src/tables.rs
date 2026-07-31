@@ -114,6 +114,9 @@ pub struct Tables {
     /// Zobrist keys.
     pub zobrist_piece: [[u64; 64]; NUM_PIECES],
     pub zobrist_side: u64,
+    /// Per-ply keys. Not part of position identity — the search folds one in only
+    /// near the spec §4 cap, where the ply changes what a position is worth.
+    pub zobrist_ply: [u64; 256],
 }
 
 fn on_board(r: i32, f: i32) -> bool {
@@ -138,6 +141,7 @@ fn build() -> Tables {
         bishop_pseudo: [0; 64],
         zobrist_piece: [[0; 64]; NUM_PIECES],
         zobrist_side: 0,
+        zobrist_ply: [0; 256],
     };
 
     // --- 3x3 blast masks and king rings ------------------------------------
@@ -229,6 +233,9 @@ fn build() -> Tables {
         }
     }
     t.zobrist_side = rng.next_u64();
+    for k in t.zobrist_ply.iter_mut() {
+        *k = rng.next_u64();
+    }
 
     t
 }

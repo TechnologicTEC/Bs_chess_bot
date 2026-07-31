@@ -234,9 +234,6 @@ pub struct Searcher {
     node_limit: Option<u64>,
     stop: Arc<AtomicBool>,
     aborted: bool,
-    /// Ply of the root position within the actual game — needed so the search
-    /// respects the spec §4 ply cap rather than searching past the end.
-    root_ply: u16,
 }
 
 impl Searcher {
@@ -253,7 +250,6 @@ impl Searcher {
             node_limit: None,
             stop: Arc::new(AtomicBool::new(false)),
             aborted: false,
-            root_ply: 0,
         }
     }
 
@@ -284,7 +280,6 @@ impl Searcher {
         self.nodes = 0;
         self.seldepth = 0;
         self.aborted = false;
-        self.root_ply = pos.ply;
         self.deadline = limits.movetime.map(|d| start + d);
         self.node_limit = limits.nodes;
         self.stop.store(false, Ordering::Relaxed);
@@ -379,7 +374,7 @@ impl Searcher {
             if p.result().is_some() {
                 break;
             }
-            let Some(e) = self.tt.probe(p.key) else { break };
+            let Some(e) = self.tt.probe(tt_key(&p)) else { break };
             if e.mv.is_none() {
                 break;
             }
@@ -463,8 +458,9 @@ impl Searcher {
         }
 
         // --- transposition probe --------------------------------------------
+        let key = tt_key(pos);
         let mut tt_move = Move::NONE;
-        if let Some(e) = self.tt.probe(pos.key) {
+        if let Some(e) = self.tt.probe(key) {
             tt_move = e.mv;
             if !is_pv && e.depth as i32 >= depth {
                 let s = from_tt_score(e.score as i32, ply);
@@ -560,7 +556,7 @@ impl Searcher {
         }
 
         self.tt
-            .store(pos.key, best_move, to_tt_score(best_score, ply), depth, bound);
+            .store(key, best_move, to_tt_score(best_score, ply), depth, bound);
         best_score
     }
 
@@ -665,6 +661,25 @@ impl Searcher {
             self.killers[p][1] = self.killers[p][0];
             self.killers[p][0] = mv;
         }
+    }
+}
+
+/// Transposition key for a position.
+///
+/// `Position::key` is pure position identity, which is what we want almost
+/// everywhere. But two paths of different lengths can reach the same position, so
+/// the same key can occur at different plies within one search — and near the
+/// spec §4 cap the ply changes what the position is worth, because material
+/// adjudication is about to fire. Fold the ply in only inside that window, so the
+/// table stays shared for the rest of the game.
+const PLY_SENSITIVE_WINDOW: u16 = 32;
+
+#[inline(always)]
+fn tt_key(pos: &Position) -> u64 {
+    if PLY_CAP.saturating_sub(pos.ply) <= PLY_SENSITIVE_WINDOW {
+        pos.key ^ crate::tables::TABLES.zobrist_ply[pos.ply as usize & 255]
+    } else {
+        pos.key
     }
 }
 
@@ -784,6 +799,24 @@ mod tests {
         let pos = Position::from_fen("4k3/8/8/8/8/8/8/3QK3 w - - 199 100").unwrap();
         let r = best_move(&pos, &SearchLimits::depth(4), Evaluator::Hand);
         assert!(r.score >= MATE_THRESHOLD, "material adjudication should win");
+    }
+
+    #[test]
+    fn transposition_key_separates_plies_only_near_the_cap() {
+        let early_a = Position::from_fen("4k3/8/8/8/8/8/8/3QK3 w - - 20 11").unwrap();
+        let early_b = Position::from_fen("4k3/8/8/8/8/8/8/3QK3 w - - 24 13").unwrap();
+        assert_eq!(
+            tt_key(&early_a),
+            tt_key(&early_b),
+            "far from the cap the table should be shared across plies"
+        );
+
+        // Inside the window the ply changes what the position is worth, because
+        // material adjudication is about to fire.
+        let late_a = Position::from_fen("4k3/8/8/8/8/8/8/3QK3 w - - 190 96").unwrap();
+        let late_b = Position::from_fen("4k3/8/8/8/8/8/8/3QK3 w - - 196 99").unwrap();
+        assert_ne!(tt_key(&late_a), tt_key(&late_b));
+        assert_ne!(tt_key(&late_a), late_a.key);
     }
 
     #[test]

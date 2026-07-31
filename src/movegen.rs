@@ -409,6 +409,35 @@ mod tests {
     }
 
     #[test]
+    fn move_list_capacity_has_real_headroom() {
+        // `push` drops silently past MAX_MOVES in release builds, so the bound
+        // needs to be genuinely unreachable, not merely usually enough. The
+        // theoretical worst case is a full 16-piece side against a bare king:
+        // 8 pawns x 47 empty squares + ~105 piece moves = 481.
+        let worst = Position::from_fen("7k/8/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1").unwrap();
+        let n = generate_vec(&worst, GenMode::All).len();
+        assert!(n < MAX_MOVES, "{n} moves against a capacity of {MAX_MOVES}");
+
+        let mut peak = n;
+        let mut rng = SplitMix64::new(0xB0A7);
+        for _ in 0..400 {
+            let mut pos = Position::startpos();
+            for _ in 0..60 {
+                if pos.result().is_some() {
+                    break;
+                }
+                let moves = generate_vec(&pos, GenMode::All);
+                peak = peak.max(moves.len());
+                pos.make_move(moves[rng.below(moves.len())]);
+            }
+        }
+        assert!(
+            peak < MAX_MOVES,
+            "observed {peak} moves against a capacity of {MAX_MOVES}"
+        );
+    }
+
+    #[test]
     fn every_position_has_a_move() {
         // Spec §1.4 — the king always has somewhere to go.
         let mut rng = SplitMix64::new(31337);
