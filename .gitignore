@@ -2,6 +2,8 @@
 /data
 /nets
 scratch_*
+*.log
+*.progress
 *.bin
 __pycache__/
 *.pyc
