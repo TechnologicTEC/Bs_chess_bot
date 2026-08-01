@@ -1,0 +1,11 @@
+# Build for this machine's actual CPU.
+#
+# The default x86-64 baseline is SSE2 only — 4 f32 lanes. NNUE inference is a
+# wall of independent multiply-adds, so it lives or dies on vector width: AVX2
+# doubles it to 8 and FMA folds the multiply and add into one instruction.
+#
+# The cost is that the binary stops being portable to older machines. That is the
+# right trade for an engine you run on the box you built it on; if you ever need
+# to ship it, drop this file and add runtime feature dispatch instead.
+[build]
+rustflags = ["-C", "target-cpu=native"]

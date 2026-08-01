@@ -58,6 +58,49 @@ fn crelu(x: f32) -> f32 {
     x.clamp(0.0, 1.0)
 }
 
+/// Vector width to encourage LLVM towards. 8 f32 lanes is one AVX2 register.
+const LANES: usize = 8;
+
+/// Dot product, summed in `LANES` independent partial sums.
+///
+/// The obvious `for i { sum += a[i] * b[i] }` does **not** vectorise: float
+/// addition is not associative, so LLVM may not legally reorder a single-variable
+/// reduction, and it silently emits scalar code. Splitting into independent
+/// partial sums makes the reassociation explicit and lets it use FMA.
+///
+/// This is the whole reason NNUE evaluation was running at scalar speed even with
+/// `target-cpu=native` — the vector units were available and simply unused.
+#[inline(always)]
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let mut sums = [0f32; LANES];
+    let mut ca = a.chunks_exact(LANES);
+    let mut cb = b.chunks_exact(LANES);
+    for (x, y) in ca.by_ref().zip(cb.by_ref()) {
+        for j in 0..LANES {
+            sums[j] = x[j].mul_add(y[j], sums[j]);
+        }
+    }
+    let mut total = 0.0;
+    for s in sums {
+        total += s;
+    }
+    for (x, y) in ca.remainder().iter().zip(cb.remainder()) {
+        total += x * y;
+    }
+    total
+}
+
+/// `dst += src`, element-wise. Iterator zip keeps the bounds checks out and this
+/// one does vectorise on its own, once the slice lengths are known to match.
+#[inline(always)]
+fn add_assign(dst: &mut [f32], src: &[f32]) {
+    debug_assert_eq!(dst.len(), src.len());
+    for (d, s) in dst.iter_mut().zip(src.iter()) {
+        *d += *s;
+    }
+}
+
 impl Network {
     pub fn zeroed() -> Network {
         Network {
@@ -88,6 +131,7 @@ impl Network {
         for half in acc.iter_mut() {
             half.copy_from_slice(&self.ft_bias);
         }
+        let (white, black) = acc.split_at_mut(1);
         for p in 0..NUM_PIECES {
             let board = pos.pieces[p];
             if board == 0 {
@@ -95,17 +139,20 @@ impl Network {
             }
             let pc = piece_color(p);
             let pt = piece_type_of(p);
+            // The two perspectives differ only in the relative-colour bit, so the
+            // feature indices are a fixed distance apart — no need to recompute.
+            let fw = feature_index(Color::White, pc, pt, 0);
+            let fb = feature_index(Color::Black, pc, pt, 0);
             for s in bits(board) {
-                for (pi, persp) in [Color::White, Color::Black].into_iter().enumerate() {
-                    let f = feature_index(persp, pc, pt, s);
-                    let col = &self.ft_weight[f * HL..(f + 1) * HL];
-                    let a = &mut acc[pi];
-                    for i in 0..HL {
-                        a[i] += col[i];
-                    }
-                }
+                add_assign(&mut white[0], self.column(fw + s));
+                add_assign(&mut black[0], self.column(fb + s));
             }
         }
+    }
+
+    #[inline(always)]
+    fn column(&self, feature: usize) -> &[f32] {
+        &self.ft_weight[feature * HL..(feature + 1) * HL]
     }
 
     /// Centipawns from the side to move's point of view.
@@ -127,27 +174,16 @@ impl Network {
         let mut h1 = [0.0f32; L1];
         for (o, h) in h1.iter_mut().enumerate() {
             let row = &self.w1[o * 2 * HL..(o + 1) * 2 * HL];
-            let mut sum = self.b1[o];
-            for i in 0..2 * HL {
-                sum += row[i] * input[i];
-            }
-            *h = crelu(sum);
+            *h = crelu(self.b1[o] + dot(row, &input));
         }
 
         let mut h2 = [0.0f32; L2];
         for (o, h) in h2.iter_mut().enumerate() {
             let row = &self.w2[o * L1..(o + 1) * L1];
-            let mut sum = self.b2[o];
-            for i in 0..L1 {
-                sum += row[i] * h1[i];
-            }
-            *h = crelu(sum);
+            *h = crelu(self.b2[o] + dot(row, &h1));
         }
 
-        let mut out = self.b3[0];
-        for (w, h) in self.w3.iter().zip(h2.iter()) {
-            out += w * h;
-        }
+        let out = self.b3[0] + dot(&self.w3, &h2);
 
         // The network is trained directly in centipawns (see tools/train.py).
         (out as i32).clamp(-MATE_THRESHOLD + 1, MATE_THRESHOLD - 1)

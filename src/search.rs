@@ -20,6 +20,11 @@ use std::time::{Duration, Instant};
 
 pub const MAX_PLY: usize = 128;
 
+/// How many plies of capture chain quiescence will follow past the horizon.
+/// Generous by normal-chess standards because capture sequences here really are
+/// long, but bounded — see the note in `quiescence`.
+pub const MAX_QUIESCENCE_DEPTH: i32 = 12;
+
 // ---------------------------------------------------------------------------
 // Transposition table
 // ---------------------------------------------------------------------------
@@ -458,7 +463,7 @@ impl Searcher {
         }
 
         if depth <= 0 {
-            return self.quiescence(pos, alpha, beta, ply);
+            return self.quiescence(pos, alpha, beta, ply, 0);
         }
 
         // --- transposition probe --------------------------------------------
@@ -573,7 +578,14 @@ impl Searcher {
     // Quiescence â€” spec Â§5.6 exact deltas do the pruning
     // -----------------------------------------------------------------------
 
-    fn quiescence(&mut self, pos: &Position, mut alpha: i32, beta: i32, ply: usize) -> i32 {
+    fn quiescence(
+        &mut self,
+        pos: &Position,
+        mut alpha: i32,
+        beta: i32,
+        ply: usize,
+        qdepth: i32,
+    ) -> i32 {
         self.nodes += 1;
         if self.check_abort() {
             return 0;
@@ -588,6 +600,16 @@ impl Searcher {
         }
 
         let stand_pat = self.options.evaluator.eval(pos);
+
+        // Quiescence has to be generous in this variant — one move can swing four
+        // pieces, so capture chains are long and real. But a noisy evaluation
+        // rarely stand-pats above beta, and the search then expands captures
+        // essentially forever: the NNUE was reaching selective depth 25 against
+        // the hand evaluation's 17 for the same nominal depth, doubling the node
+        // count. The cap is loose enough that it only bites on the runaways.
+        if qdepth >= MAX_QUIESCENCE_DEPTH {
+            return stand_pat;
+        }
         if stand_pat >= beta {
             return stand_pat;
         }
@@ -620,7 +642,7 @@ impl Searcher {
             }
 
             let (child, _) = pos.after(mv);
-            let score = -self.quiescence(&child, -beta, -alpha, ply + 1);
+            let score = -self.quiescence(&child, -beta, -alpha, ply + 1, qdepth + 1);
             if self.aborted {
                 self.lists[ply] = list;
                 return 0;

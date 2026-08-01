@@ -236,12 +236,64 @@ fn eval_fens(net_path: Option<&str>) -> i32 {
     0
 }
 
+/// Time the NNUE forward pass and its parts, so optimisation targets the layer
+/// that actually costs something rather than the one that looks expensive.
+fn bench_nnue(net_path: &str) {
+    use bschess::nnue::HL;
+    let net = match Network::load(net_path) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("could not load {net_path}: {e}");
+            std::process::exit(2);
+        }
+    };
+    // A spread of realistic positions rather than one, so the feature-column
+    // access pattern is as scattered as it is in a real search.
+    let positions: Vec<Position> = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w - - 30 16",
+        "4k3/8/8/3n4/8/8/8/R3K3 w - - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 44 23",
+        "3qk3/8/8/8/8/8/8/3QK3 b - - 3 2",
+    ]
+    .iter()
+    .map(|f| Position::from_fen(f).unwrap())
+    .collect();
+
+    const ITERS: usize = 200_000;
+    let mut sink = 0i64;
+
+    let t = std::time::Instant::now();
+    for i in 0..ITERS {
+        sink += net.evaluate(&positions[i % positions.len()]) as i64;
+    }
+    let full = t.elapsed().as_secs_f64();
+
+    let mut acc = [[0.0f32; HL]; 2];
+    let t = std::time::Instant::now();
+    for i in 0..ITERS {
+        net.accumulate(&positions[i % positions.len()], &mut acc);
+        sink += acc[0][0] as i64;
+    }
+    let accum = t.elapsed().as_secs_f64();
+
+    let per = |s: f64| s / ITERS as f64 * 1e9;
+    println!("full evaluate      {:>8.0} ns   {:>10.0} evals/s", per(full), ITERS as f64 / full);
+    println!("  accumulator      {:>8.0} ns   {:>5.1}% of the total", per(accum), 100.0 * accum / full);
+    println!("  layers L1-L3     {:>8.0} ns   {:>5.1}% of the total", per(full - accum), 100.0 * (full - accum) / full);
+    println!("(checksum {sink})");
+}
+
 fn main() {
     bschess::init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(i) = args.iter().position(|a| a == "--eval-fens") {
         std::process::exit(eval_fens(args.get(i + 1).map(|s| s.as_str())));
+    }
+    if let Some(i) = args.iter().position(|a| a == "--bench-nnue") {
+        bench_nnue(args.get(i + 1).map(|s| s.as_str()).unwrap_or("nets/gen1.bin"));
+        return;
     }
 
     let mut s = Session::new();

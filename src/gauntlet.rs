@@ -128,8 +128,12 @@ pub fn play_game(
 
 /// Play `pairs * 2` games — every opening once from each side — in parallel.
 /// Returns the score from `a`'s point of view.
+///
+/// Progress goes to stderr as pairs complete. A match can run for hours when one
+/// side is an NNUE, and silence for that long is indistinguishable from a hang.
 pub fn play_match(a: &Participant, b: &Participant, pairs: usize, seed: u64) -> MatchScore {
     use rayon::prelude::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     let opening_cfg = SelfPlayConfig {
         evaluator: a.evaluator.clone(),
@@ -142,8 +146,13 @@ pub fn play_match(a: &Participant, b: &Participant, pairs: usize, seed: u64) -> 
         })
         .collect();
 
+    let done = AtomicU64::new(0);
+    let running = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    let start = std::time::Instant::now();
+
     let scores: Vec<MatchScore> = openings
         .par_iter()
+        .with_max_len(1)
         .map(|opening| {
             let mut s = MatchScore::default();
             for a_is_white in [true, false] {
@@ -155,6 +164,26 @@ pub fn play_match(a: &Participant, b: &Participant, pairs: usize, seed: u64) -> 
                     GameResult::Win(c) if c == a_color => s.wins += 1,
                     GameResult::Win(_) => s.losses += 1,
                 }
+            }
+            running[0].fetch_add(s.wins as u64, Ordering::Relaxed);
+            running[1].fetch_add(s.losses as u64, Ordering::Relaxed);
+            running[2].fetch_add(s.draws as u64, Ordering::Relaxed);
+
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            let step = (pairs / 20).max(1);
+            if n % step as u64 == 0 || n == pairs as u64 {
+                let elapsed = start.elapsed().as_secs_f64();
+                let eta = elapsed / n as f64 * (pairs as f64 - n as f64);
+                eprintln!(
+                    "  {:>4}/{} pairs  +{} -{} ={}  [{:.0}s elapsed, ~{:.0}s left]",
+                    n,
+                    pairs,
+                    running[0].load(Ordering::Relaxed),
+                    running[1].load(Ordering::Relaxed),
+                    running[2].load(Ordering::Relaxed),
+                    elapsed,
+                    eta
+                );
             }
             s
         })
