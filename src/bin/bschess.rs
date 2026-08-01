@@ -277,10 +277,33 @@ fn bench_nnue(net_path: &str) {
     }
     let accum = t.elapsed().as_secs_f64();
 
+    // How many of L1's 512 inputs are exactly zero? They come out of a
+    // ClippedReLU, so everything the accumulator drove negative clamps to zero,
+    // and a zero input contributes nothing to any output. If that fraction is
+    // large, a column-major weight layout can skip those columns entirely and
+    // save the memory traffic, not just the arithmetic.
+    let mut zero = 0usize;
+    let mut total = 0usize;
+    for pos in &positions {
+        net.accumulate(pos, &mut acc);
+        for half in acc.iter() {
+            for v in half.iter() {
+                if v.clamp(0.0, 1.0) == 0.0 {
+                    zero += 1;
+                }
+                total += 1;
+            }
+        }
+    }
+
     let per = |s: f64| s / ITERS as f64 * 1e9;
     println!("full evaluate      {:>8.0} ns   {:>10.0} evals/s", per(full), ITERS as f64 / full);
     println!("  accumulator      {:>8.0} ns   {:>5.1}% of the total", per(accum), 100.0 * accum / full);
     println!("  layers L1-L3     {:>8.0} ns   {:>5.1}% of the total", per(full - accum), 100.0 * (full - accum) / full);
+    println!(
+        "L1 input sparsity  {:>8.1}%  of {total} values clamp to exactly zero",
+        100.0 * zero as f64 / total as f64
+    );
     println!("(checksum {sink})");
 }
 
