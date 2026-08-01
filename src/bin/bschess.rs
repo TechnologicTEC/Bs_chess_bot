@@ -239,7 +239,7 @@ fn eval_fens(net_path: Option<&str>) -> i32 {
 /// Time the NNUE forward pass and its parts, so optimisation targets the layer
 /// that actually costs something rather than the one that looks expensive.
 fn bench_nnue(net_path: &str) {
-    use bschess::nnue::HL;
+    use bschess::nnue::{L1, L2, MAX_HL};
     let net = match Network::load(net_path) {
         Ok(n) => n,
         Err(e) => {
@@ -269,7 +269,7 @@ fn bench_nnue(net_path: &str) {
     }
     let full = t.elapsed().as_secs_f64();
 
-    let mut acc = [[0.0f32; HL]; 2];
+    let mut acc = [[0.0f32; MAX_HL]; 2];
     let t = std::time::Instant::now();
     for i in 0..ITERS {
         net.accumulate(&positions[i % positions.len()], &mut acc);
@@ -277,17 +277,17 @@ fn bench_nnue(net_path: &str) {
     }
     let accum = t.elapsed().as_secs_f64();
 
-    // How many of L1's 512 inputs are exactly zero? They come out of a
-    // ClippedReLU, so everything the accumulator drove negative clamps to zero,
-    // and a zero input contributes nothing to any output. If that fraction is
-    // large, a column-major weight layout can skip those columns entirely and
-    // save the memory traffic, not just the arithmetic.
+    // How many L1 inputs are exactly zero? They come out of a ClippedReLU, so
+    // everything the accumulator drove negative clamps to zero, and a zero input
+    // contributes nothing to any output. If that fraction were large, a
+    // column-major weight layout could skip those columns and save the memory
+    // traffic, not just the arithmetic. Measured at ~7% here, so it cannot.
     let mut zero = 0usize;
     let mut total = 0usize;
     for pos in &positions {
         net.accumulate(pos, &mut acc);
         for half in acc.iter() {
-            for v in half.iter() {
+            for v in half[..net.hl].iter() {
                 if v.clamp(0.0, 1.0) == 0.0 {
                     zero += 1;
                 }
@@ -297,7 +297,8 @@ fn bench_nnue(net_path: &str) {
     }
 
     let per = |s: f64| s / ITERS as f64 * 1e9;
-    println!("full evaluate      {:>8.0} ns   {:>10.0} evals/s", per(full), ITERS as f64 / full);
+    println!("network            768x{}x{}x{}, {} parameters", net.hl, L1, L2, net.parameter_count());
+    println!("evaluate           {:>8.0} ns   {:>10.0} evals/s", per(full), ITERS as f64 / full);
     println!("  accumulator      {:>8.0} ns   {:>5.1}% of the total", per(accum), 100.0 * accum / full);
     println!("  layers L1-L3     {:>8.0} ns   {:>5.1}% of the total", per(full - accum), 100.0 * (full - accum) / full);
     println!(

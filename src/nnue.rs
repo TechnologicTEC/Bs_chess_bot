@@ -22,7 +22,13 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 pub const NUM_FEATURES: usize = 768; // 12 piece types x 64 squares
-pub const HL: usize = 256; // hidden layer per perspective
+/// Largest hidden layer the stack buffers are sized for.
+pub const MAX_HL: usize = 256;
+/// Hidden layer per perspective for a freshly built network. The actual width is
+/// read from the file header, so one binary can load and compare networks of
+/// different sizes — which is the only way to find out how wide this variant
+/// actually needs.
+pub const DEFAULT_HL: usize = 256;
 pub const L1: usize = 32;
 pub const L2: usize = 32;
 
@@ -41,11 +47,13 @@ pub fn feature_index(perspective: Color, piece_color: Color, pt: PieceType, squa
 
 #[derive(Clone)]
 pub struct Network {
+    /// Hidden layer width per perspective, from the file header.
+    pub hl: usize,
     /// Feature transformer, row-major by feature so one feature is a contiguous
-    /// 256-float span.
-    pub ft_weight: Vec<f32>, // NUM_FEATURES * HL
-    pub ft_bias: Vec<f32>,   // HL
-    pub w1: Vec<f32>,        // L1 * (2 * HL)
+    /// `hl`-float span.
+    pub ft_weight: Vec<f32>, // NUM_FEATURES * hl
+    pub ft_bias: Vec<f32>,   // hl
+    pub w1: Vec<f32>,        // L1 * (2 * hl)
     pub b1: Vec<f32>,        // L1
     pub w2: Vec<f32>,        // L2 * L1
     pub b2: Vec<f32>,        // L2
@@ -103,10 +111,16 @@ fn add_assign(dst: &mut [f32], src: &[f32]) {
 
 impl Network {
     pub fn zeroed() -> Network {
+        Network::zeroed_with(DEFAULT_HL)
+    }
+
+    pub fn zeroed_with(hl: usize) -> Network {
+        assert!(hl <= MAX_HL && hl % 8 == 0, "hidden layer must be a multiple of 8, at most {MAX_HL}");
         Network {
-            ft_weight: vec![0.0; NUM_FEATURES * HL],
-            ft_bias: vec![0.0; HL],
-            w1: vec![0.0; L1 * 2 * HL],
+            hl,
+            ft_weight: vec![0.0; NUM_FEATURES * hl],
+            ft_bias: vec![0.0; hl],
+            w1: vec![0.0; L1 * 2 * hl],
             b1: vec![0.0; L1],
             w2: vec![0.0; L2 * L1],
             b2: vec![0.0; L2],
@@ -126,10 +140,11 @@ impl Network {
             + self.b3.len()
     }
 
-    /// Full accumulator refresh for both perspectives.
-    pub fn accumulate(&self, pos: &Position, acc: &mut [[f32; HL]; 2]) {
+    /// Full accumulator refresh for both perspectives. Only the first `self.hl`
+    /// entries of each half are written.
+    pub fn accumulate(&self, pos: &Position, acc: &mut [[f32; MAX_HL]; 2]) {
         for half in acc.iter_mut() {
-            half.copy_from_slice(&self.ft_bias);
+            half[..self.hl].copy_from_slice(&self.ft_bias);
         }
         let (white, black) = acc.split_at_mut(1);
         for p in 0..NUM_PIECES {
@@ -144,20 +159,20 @@ impl Network {
             let fw = feature_index(Color::White, pc, pt, 0);
             let fb = feature_index(Color::Black, pc, pt, 0);
             for s in bits(board) {
-                add_assign(&mut white[0], self.column(fw + s));
-                add_assign(&mut black[0], self.column(fb + s));
+                add_assign(&mut white[0][..self.hl], self.column(fw + s));
+                add_assign(&mut black[0][..self.hl], self.column(fb + s));
             }
         }
     }
 
     #[inline(always)]
     fn column(&self, feature: usize) -> &[f32] {
-        &self.ft_weight[feature * HL..(feature + 1) * HL]
+        &self.ft_weight[feature * self.hl..(feature + 1) * self.hl]
     }
 
     /// Centipawns from the side to move's point of view.
     pub fn evaluate(&self, pos: &Position) -> i32 {
-        let mut acc = [[0.0f32; HL]; 2];
+        let mut acc = [[0.0f32; MAX_HL]; 2];
         self.accumulate(pos, &mut acc);
 
         // Side to move's perspective goes first.
@@ -165,16 +180,18 @@ impl Network {
             Color::White => (0, 1),
             Color::Black => (1, 0),
         };
-        let mut input = [0.0f32; 2 * HL];
-        for i in 0..HL {
+        let hl = self.hl;
+        let mut input = [0.0f32; 2 * MAX_HL];
+        for i in 0..hl {
             input[i] = crelu(acc[us][i]);
-            input[HL + i] = crelu(acc[them][i]);
+            input[hl + i] = crelu(acc[them][i]);
         }
+        let input = &input[..2 * hl];
 
         let mut h1 = [0.0f32; L1];
         for (o, h) in h1.iter_mut().enumerate() {
-            let row = &self.w1[o * 2 * HL..(o + 1) * 2 * HL];
-            *h = crelu(self.b1[o] + dot(row, &input));
+            let row = &self.w1[o * 2 * hl..(o + 1) * 2 * hl];
+            *h = crelu(self.b1[o] + dot(row, input));
         }
 
         let mut h2 = [0.0f32; L2];
@@ -220,13 +237,20 @@ impl Network {
             u32_at(16) as usize,
             u32_at(20) as usize,
         );
-        if (nf, hl, l1, l2) != (NUM_FEATURES, HL, L1, L2) {
+        // The hidden layer width is whatever the file says, so networks of
+        // different sizes can be loaded and played against each other.
+        if (nf, l1, l2) != (NUM_FEATURES, L1, L2) {
             return Err(bad(&format!(
                 "network shape {nf}x{hl}x{l1}x{l2} does not match the compiled \
-                 {NUM_FEATURES}x{HL}x{L1}x{L2}"
+                 {NUM_FEATURES}x*x{L1}x{L2}"
             )));
         }
-        let mut net = Network::zeroed();
+        if hl == 0 || hl > MAX_HL || hl % 8 != 0 {
+            return Err(bad(&format!(
+                "hidden layer {hl} must be a non-zero multiple of 8, at most {MAX_HL}"
+            )));
+        }
+        let mut net = Network::zeroed_with(hl);
         let mut off = 24;
         let read = |dst: &mut Vec<f32>, off: &mut usize| -> std::io::Result<()> {
             let n = dst.len();
@@ -258,7 +282,7 @@ impl Network {
         let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
         f.write_all(&MAGIC.to_le_bytes())?;
         f.write_all(&VERSION.to_le_bytes())?;
-        for v in [NUM_FEATURES, HL, L1, L2] {
+        for v in [NUM_FEATURES, self.hl, L1, L2] {
             f.write_all(&(v as u32).to_le_bytes())?;
         }
         for arr in [

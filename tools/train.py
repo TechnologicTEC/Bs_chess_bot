@@ -149,21 +149,27 @@ def load_records(paths, quiet_only=True):
 # ---------------------------------------------------------------------------
 
 class Nnue(nn.Module):
-    """768 -> 256 per perspective (weights shared) -> concat 512 -> 32 -> 32 -> 1.
+    """768 -> hl per perspective (weights shared) -> concat 2*hl -> 32 -> 32 -> 1.
 
-    ClippedReLU throughout, matching src/nnue.rs. ~200k parameters.
+    ClippedReLU throughout, matching src/nnue.rs.
 
     `forward` returns a **win-probability logit**, not centipawns. Training the
     output directly in centipawns puts every gradient through a 1/400 divisor and
     the thing simply never moves off zero. The centipawn scale is folded into the
     final layer at export time instead, so the engine still reads centipawns and
     src/nnue.rs needs no knowledge of any of this.
+
+    `hl` is written into the file header and the engine reads it back, so networks
+    of different widths can be loaded and played against each other. Width is the
+    main speed/quality dial: evaluation cost is roughly linear in it, and at 256
+    the forward pass was 7.6x slower per node than the hand evaluation.
     """
 
-    def __init__(self):
+    def __init__(self, hl=HL):
         super().__init__()
-        self.ft = nn.Linear(NUM_FEATURES, HL)
-        self.l1 = nn.Linear(2 * HL, L1)
+        self.hl = hl
+        self.ft = nn.Linear(NUM_FEATURES, hl)
+        self.l1 = nn.Linear(2 * hl, L1)
         self.l2 = nn.Linear(L1, L2)
         self.l3 = nn.Linear(L2, 1)
         # Only ~32 of the 768 features are ever active, so the accumulator needs a
@@ -208,7 +214,7 @@ def export(model, path, scale):
     if parent:
         os.makedirs(parent, exist_ok=True)
     with open(path, "wb") as fh:
-        fh.write(struct.pack("<6I", MAGIC, VERSION, NUM_FEATURES, HL, L1, L2))
+        fh.write(struct.pack("<6I", MAGIC, VERSION, NUM_FEATURES, model.hl, L1, L2))
         # PyTorch stores Linear weight as (out, in). The engine indexes the
         # feature transformer by feature, so it goes out transposed.
         for tensor in (
@@ -277,6 +283,10 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--augment", type=int, default=8, choices=range(1, 9),
                     help="how many of the 8 dihedral symmetries to sample from")
+    ap.add_argument("--hl", type=int, default=HL,
+                    help="hidden layer width per perspective; must be a multiple "
+                         "of 8 and at most 256. Smaller is faster to evaluate, "
+                         "which buys search depth back")
     ap.add_argument("--lambda-result", type=float, default=0.3,
                     help="label = (1-l) * search_score + l * game_result")
     ap.add_argument("--scale", type=float, default=400.0,
@@ -331,8 +341,11 @@ def main():
     generator = torch.Generator(device=device)
     generator.manual_seed(args.seed)
 
-    model = Nnue().to(device)
-    print("model: %d parameters" % sum(p.numel() for p in model.parameters()))
+    if args.hl % 8 or not (0 < args.hl <= 256):
+        sys.exit("--hl must be a multiple of 8 in 8..256, got %d" % args.hl)
+    model = Nnue(args.hl).to(device)
+    print("model: 768x%dx%dx%d, %d parameters"
+          % (args.hl, L1, L2, sum(p.numel() for p in model.parameters())))
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-6)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(args.epochs, 1))

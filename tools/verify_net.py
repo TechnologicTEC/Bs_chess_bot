@@ -52,11 +52,12 @@ def load_into_model(path):
         sys.exit("%s is not a bschess network file" % path)
     if version != VERSION:
         sys.exit("unsupported network version %d" % version)
-    if (nf, hl, l1, l2) != (NUM_FEATURES, HL, L1, L2):
+    if (nf, l1, l2) != (NUM_FEATURES, L1, L2):
         sys.exit("network shape %dx%dx%dx%d does not match the trainer" % (nf, hl, l1, l2))
 
     floats = np.frombuffer(blob, dtype="<f4", offset=24)
-    model = Nnue()
+    model = Nnue(hl)
+    HL = hl
     cursor = 0
 
     def take(shape):
