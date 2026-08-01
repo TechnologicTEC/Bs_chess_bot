@@ -101,8 +101,13 @@ def load_records(paths, quiet_only=True):
         raw = np.fromfile(path, dtype=np.uint8)
         if raw.size == 0:
             sys.exit("%s is empty" % path)
-        if raw.size % RECORD_SIZE:
-            sys.exit("%s is not a whole number of %d-byte records" % (path, RECORD_SIZE))
+        # A long self-play run that gets interrupted leaves a partial record at
+        # the end. Everything before it is perfectly good data, so drop the tail
+        # rather than refusing the whole shard.
+        tail = raw.size % RECORD_SIZE
+        if tail:
+            print("  %-40s dropping %d trailing bytes (interrupted run?)" % (path, tail))
+            raw = raw[:raw.size - tail]
         chunks.append(raw.reshape(-1, RECORD_SIZE))
         print("  %-40s %9d records" % (path, chunks[-1].shape[0]))
     rec = np.concatenate(chunks, axis=0) if len(chunks) > 1 else chunks[0]
