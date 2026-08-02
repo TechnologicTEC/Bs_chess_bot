@@ -20,7 +20,7 @@
 
 use bschess::data::Sample;
 use bschess::eval::{
-    eval_features, eval_weights, EVAL_FEATURE_NAMES, NUM_EVAL_FEATURES,
+    eval_feature_name, eval_features, eval_weights, NUM_EVAL_FEATURES,
 };
 use bschess::tables::SplitMix64;
 use bschess::types::Color;
@@ -228,7 +228,7 @@ fn main() {
     for j in 0..NUM_EVAL_FEATURES {
         println!(
             "{:<20} {:>10.0} {:>10.0} {:>+10.0}",
-            EVAL_FEATURE_NAMES[j],
+            eval_feature_name(j),
             start[j],
             w[j].round(),
             (w[j] - start[j]).round()
@@ -236,19 +236,10 @@ fn main() {
     }
 
     println!("\n--- paste into src/eval.rs ---");
-    println!(
-        "pub const PIECE_VALUE: [i32; NUM_PIECE_TYPES] = [\n    \
-         {:.0},   // Pawn\n    {:.0},  // Knight\n    {:.0},  // Bishop\n    \
-         {:.0},  // Rook\n    {:.0}, // Queen\n    0,    // King\n];",
-        w[0].round(),
-        w[1].round(),
-        w[2].round(),
-        w[3].round(),
-        w[4].round()
-    );
-    println!("pub const W_LATENT_DETONATOR: i32 = {:.0};", w[5].round());
-    println!("pub const W_LIVE_DETONATOR: i32 = {:.0};", w[6].round());
-    println!("pub const W_KNIGHT_ON_KING: i32 = {:.0};", w[7].round());
-    println!("pub const W_CLUSTER: i32 = {:.0};", w[8].round());
-    println!("pub const W_TEMPO: i32 = {:.0};", w[9].round());
+    println!("pub const TUNED_V2_WEIGHTS: HandWeights = [");
+    for chunk in w.chunks(10) {
+        let row: Vec<String> = chunk.iter().map(|x| format!("{:.0}", x.round())).collect();
+        println!("    {},", row.join(", "));
+    }
+    println!("];");
 }

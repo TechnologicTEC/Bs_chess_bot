@@ -44,7 +44,22 @@ pub const KING_ORDER_VALUE: i32 = 20_000;
 /// produced. Both are kept so the two can be played against each other.
 pub type HandWeights = [i32; NUM_EVAL_FEATURES];
 
-pub const SPEC_WEIGHTS: HandWeights = [25, 900, 400, 450, 1000, -40, -300, -120, 30, 15];
+/// Build a weight vector from the ten original terms, leaving every added
+/// feature at zero. A zero weight contributes nothing, so this reproduces the
+/// pre-piece-square-table evaluation exactly — which is what makes it a valid
+/// baseline to measure the new terms against.
+const fn base_weights(core: [i32; 10]) -> HandWeights {
+    let mut w = [0; NUM_EVAL_FEATURES];
+    let mut i = 0;
+    while i < 10 {
+        w[i] = core[i];
+        i += 1;
+    }
+    w
+}
+
+pub const SPEC_WEIGHTS: HandWeights =
+    base_weights([25, 900, 400, 450, 1000, -40, -300, -120, 30, 15]);
 
 /// Texel-tuned against 759k labelled positions from `data/gen1*.bin`.
 /// Training loss 0.041183 -> 0.027392; **+49 ± 49 Elo over `SPEC_WEIGHTS`** at
@@ -59,7 +74,27 @@ pub const SPEC_WEIGHTS: HandWeights = [25, 900, 400, 450, 1000, -40, -300, -120,
 ///   (§5.2) is worth far more than a quarter-pawn.
 /// * **Latent detonator -0.40 -> +0.48, a sign flip.** See the note on
 ///   `king_safety_counts`.
-pub const TUNED_WEIGHTS: HandWeights = [70, 944, 318, 456, 1696, 48, -321, -180, 69, 16];
+pub const TUNED_WEIGHTS: HandWeights =
+    base_weights([70, 944, 318, 456, 1696, 48, -321, -180, 69, 16]);
+
+/// Refit including the piece-square tables and the three added terms, over 1.06M
+/// labelled positions. Validation loss 0.026348 -> 0.016499, against the NNUE's
+/// 0.0087 — so roughly half the remaining gap to what a 214k-parameter network
+/// could extract, at no run-time cost.
+///
+/// Material and the tables are deliberately collinear (both scale with piece
+/// count), so the individual numbers below are not separately meaningful — only
+/// the total is. A knight reads as -157 material plus ~+680 table.
+pub const TUNED_V2_WEIGHTS: HandWeights = [
+    33, -157, 11, -112, 760, 8, -173, -12, 46, 9, //
+    8, -11, -16, -16, 4, 6, 22, 2, -11, -2, // pawn table
+    694, 647, 669, 688, 678, 692, 687, 677, 700, 715, // knight table
+    278, 257, 267, 309, 340, 305, 418, 326, 458, 358, // bishop table
+    430, 498, 451, 488, 480, 468, 472, 462, 469, 494, // rook table
+    549, 520, 570, 395, 588, 553, 593, 590, 620, 683, // queen table
+    -43, -48, -7, 59, -52, -46, -46, -80, -69, -88, // king table
+    6, -10, 32, // knight span, attack primer, pawn endgame
+];
 
 /// Score bounds. Wins are stored as `MATE - ply` so that shorter wins are preferred.
 pub const MATE: i32 = 30_000;
@@ -75,6 +110,9 @@ pub enum Evaluator {
     /// The hand evaluation with tuned weights. This is what the engine plays.
     #[default]
     Hand,
+    /// Candidate: the same evaluation refit with piece-square tables and three
+    /// added terms. Promoted to `Hand` once it has beaten it over enough games.
+    HandV2,
     /// The same evaluation with spec §6's starting guesses, kept as the baseline
     /// the tuned set is measured against.
     HandSpec,
@@ -88,6 +126,7 @@ impl Evaluator {
     pub fn eval(&self, pos: &Position) -> i32 {
         match self {
             Evaluator::Hand => evaluate_with(pos, &TUNED_WEIGHTS),
+            Evaluator::HandV2 => evaluate_with(pos, &TUNED_V2_WEIGHTS),
             Evaluator::HandSpec => evaluate_with(pos, &SPEC_WEIGHTS),
             Evaluator::Nnue(n) => n.evaluate(pos),
         }
@@ -95,6 +134,7 @@ impl Evaluator {
     pub fn name(&self) -> &'static str {
         match self {
             Evaluator::Hand => "hand-tuned",
+            Evaluator::HandV2 => "hand-v2",
             Evaluator::HandSpec => "hand-spec",
             Evaluator::Nnue(_) => "nnue",
         }
@@ -169,14 +209,47 @@ pub fn evaluate_white_with(pos: &Position, w: &HandWeights) -> i32 {
         mat_b += pos.bb_of(Color::Black, pt).count_ones() as i32 * w[i];
     }
 
-    let material = (mat_w - mat_b) * endgame_scale(pos, w) / 100;
+    let scale = endgame_scale(pos, w);
+    let material = (mat_w - mat_b) * scale / 100;
 
     let (lw, vw, kw) = king_safety_counts(pos, Color::White);
     let (lb, vb, kb) = king_safety_counts(pos, Color::Black);
-    let safety = w[5] * (lw - lb) + w[6] * (vw - vb) + w[7] * (kw - kb);
-    let cluster = w[8] * (cluster_count(pos, Color::White) - cluster_count(pos, Color::Black));
+    let safety = w[F_LATENT] * (lw - lb) + w[F_LIVE] * (vw - vb) + w[F_KNIGHT_ON_KING] * (kw - kb);
+    let cluster =
+        w[F_CLUSTER] * (cluster_count(pos, Color::White) - cluster_count(pos, Color::Black));
 
-    material + safety + cluster
+    // Piece-square tables. One table lookup and one add per piece on the board —
+    // cheap enough that it does not move the node rate, which is the whole reason
+    // to prefer this over a network.
+    let orbit = &*ORBIT;
+    let mut pst = 0;
+    for p in 0..NUM_PIECES {
+        let board = pos.pieces[p];
+        if board == 0 {
+            continue;
+        }
+        let base = F_PST + piece_type_of(p).index() * NUM_ORBITS;
+        let sign = if piece_color(p) == Color::White { 1 } else { -1 };
+        for s in bits(board) {
+            pst += sign * w[base + orbit[s] as usize];
+        }
+    }
+
+    let extra = w[F_KNIGHT_SPAN]
+        * (knight_span_count(pos, Color::White) - knight_span_count(pos, Color::Black))
+        + w[F_ATTACK_PRIMER]
+            * (attack_primer_count(pos, Color::White) - attack_primer_count(pos, Color::Black))
+        + w[F_PAWN_ENDGAME] * pawn_endgame_term(pos, scale);
+
+    material + safety + cluster + pst + extra
+}
+
+/// Pawn-count difference weighted by how far the position has drained toward the
+/// kings-and-pawns draw. Zero in the opening, largest in the endgame.
+fn pawn_endgame_term(pos: &Position, scale: i32) -> i32 {
+    let diff = pos.bb_of(Color::White, PieceType::Pawn).count_ones() as i32
+        - pos.bb_of(Color::Black, PieceType::Pawn).count_ones() as i32;
+    diff * (100 - scale) / 100
 }
 
 
@@ -227,6 +300,23 @@ fn king_safety_counts(pos: &Position, us: Color) -> (i32, i32, i32) {
 }
 
 
+/// Enemy pieces standing on any square our knights can sweep through.
+fn knight_span_count(pos: &Position, us: Color) -> i32 {
+    let t = &*TABLES;
+    let enemy = pos.occ_color[us.flip().index()];
+    bits(pos.bb_of(us, PieceType::Knight))
+        .map(|s| (t.knight_span[s] & enemy).count_ones() as i32)
+        .sum()
+}
+
+/// Our pieces adjacent to the enemy king — detonators already in place.
+fn attack_primer_count(pos: &Position, us: Color) -> i32 {
+    let Some(k) = pos.king_sq(us.flip()) else {
+        return 0;
+    };
+    (TABLES.ring[k] & pos.occ_color[us.index()]).count_ones() as i32
+}
+
 /// Enemy pieces caught by the single best detonation available to `us`, or 0 if
 /// the best one nets fewer than two.
 fn cluster_count(pos: &Position, us: Color) -> i32 {
@@ -264,20 +354,89 @@ fn cluster_count(pos: &Position, us: Color) -> i32 {
 // constants, identical speed. Every Elo found here is kept, unlike an NNUE where
 // better judgement is paid for in search depth.
 
-pub const NUM_EVAL_FEATURES: usize = 10;
+// Feature layout. Indices are stable; append rather than insert.
+pub const F_MATERIAL: usize = 0; // 5, scaled by the endgame factor
+pub const F_LATENT: usize = 5;
+pub const F_LIVE: usize = 6;
+pub const F_KNIGHT_ON_KING: usize = 7;
+pub const F_CLUSTER: usize = 8;
+pub const F_TEMPO: usize = 9;
+/// Piece-square tables: 6 piece types x 10 symmetry orbits.
+pub const F_PST: usize = 10;
+/// Enemy pieces standing on our knights' sweep paths — the offensive counterpart
+/// to `knight_on_king`. Spec §5.4 calls the knight the premium piece, but the
+/// evaluation only modelled it defensively.
+pub const F_KNIGHT_SPAN: usize = 70;
+/// Our own pieces adjacent to the *enemy* king: detonators we have already
+/// manufactured (spec §5.2).
+pub const F_ATTACK_PRIMER: usize = 71;
+/// Extra pawn value as the board empties, since the kings-and-pawns draw (§5.5)
+/// makes pawns the trailing side's resource. A single linear pawn term cannot
+/// express this.
+pub const F_PAWN_ENDGAME: usize = 72;
 
-pub const EVAL_FEATURE_NAMES: [&str; NUM_EVAL_FEATURES] = [
-    "pawn",
-    "knight",
-    "bishop",
-    "rook",
-    "queen",
-    "latent_detonator",
-    "live_detonator",
-    "knight_on_king",
-    "cluster",
-    "tempo",
-];
+pub const NUM_EVAL_FEATURES: usize = 73;
+
+/// Number of distinct squares under the board's dihedral symmetry.
+///
+/// The rules are fully invariant under the dihedral group (no castling, no
+/// forward direction), so a piece-square table **must** be too — a1, a8, h1 and
+/// h8 cannot have different values. That collapses 64 squares to 10 orbits, so a
+/// full six-piece table is 60 parameters rather than 384. Fewer numbers to fit,
+/// impossible to overfit, and correct by construction.
+pub const NUM_ORBITS: usize = 10;
+
+/// `ORBIT[square]` in `0..10`.
+pub static ORBIT: std::sync::LazyLock<[u8; 64]> = std::sync::LazyLock::new(|| {
+    // Every orbit is identified by the unordered pair of distances-to-nearest-edge
+    // along each axis. There are 10 such pairs from {0,1,2,3}.
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for a in 0..4 {
+        for b in a..4 {
+            pairs.push((a, b));
+        }
+    }
+    debug_assert_eq!(pairs.len(), NUM_ORBITS);
+    let mut table = [0u8; 64];
+    for (s, slot) in table.iter_mut().enumerate() {
+        let (r, c) = (rank_of(s), file_of(s));
+        let a = r.min(7 - r);
+        let b = c.min(7 - c);
+        let key = (a.min(b), a.max(b));
+        *slot = pairs.iter().position(|&p| p == key).unwrap() as u8;
+    }
+    table
+});
+
+pub fn eval_feature_name(i: usize) -> String {
+    const BASE: [&str; 10] = [
+        "pawn",
+        "knight",
+        "bishop",
+        "rook",
+        "queen",
+        "latent_detonator",
+        "live_detonator",
+        "knight_on_king",
+        "cluster",
+        "tempo",
+    ];
+    match i {
+        0..=9 => BASE[i].to_string(),
+        _ if i < F_KNIGHT_SPAN => {
+            let k = i - F_PST;
+            format!(
+                "pst_{}_orbit{}",
+                PieceType::from_index(k / NUM_ORBITS).to_char(),
+                k % NUM_ORBITS
+            )
+        }
+        F_KNIGHT_SPAN => "knight_span".to_string(),
+        F_ATTACK_PRIMER => "attack_primer".to_string(),
+        F_PAWN_ENDGAME => "pawn_endgame".to_string(),
+        _ => format!("feature{i}"),
+    }
+}
 
 /// The weights the engine currently plays with, in feature order. Re-running the
 /// tuner starts from these, so successive passes compound rather than restart.
@@ -317,11 +476,30 @@ pub fn eval_features_with(pos: &Position, scale_weights: &HandWeights) -> [f32; 
 
     let (lw, vw, kw) = king_safety_counts(pos, Color::White);
     let (lb, vb, kb) = king_safety_counts(pos, Color::Black);
-    f[5] = (lw - lb) as f32;
-    f[6] = (vw - vb) as f32;
-    f[7] = (kw - kb) as f32;
-    f[8] = (cluster_count(pos, Color::White) - cluster_count(pos, Color::Black)) as f32;
-    f[9] = if pos.side == Color::White { 1.0 } else { -1.0 };
+    f[F_LATENT] = (lw - lb) as f32;
+    f[F_LIVE] = (vw - vb) as f32;
+    f[F_KNIGHT_ON_KING] = (kw - kb) as f32;
+    f[F_CLUSTER] = (cluster_count(pos, Color::White) - cluster_count(pos, Color::Black)) as f32;
+    f[F_TEMPO] = if pos.side == Color::White { 1.0 } else { -1.0 };
+
+    let orbit = &*ORBIT;
+    for p in 0..NUM_PIECES {
+        let board = pos.pieces[p];
+        if board == 0 {
+            continue;
+        }
+        let base = F_PST + piece_type_of(p).index() * NUM_ORBITS;
+        let sign = if piece_color(p) == Color::White { 1.0 } else { -1.0 };
+        for s in bits(board) {
+            f[base + orbit[s] as usize] += sign;
+        }
+    }
+
+    f[F_KNIGHT_SPAN] =
+        (knight_span_count(pos, Color::White) - knight_span_count(pos, Color::Black)) as f32;
+    f[F_ATTACK_PRIMER] =
+        (attack_primer_count(pos, Color::White) - attack_primer_count(pos, Color::Black)) as f32;
+    f[F_PAWN_ENDGAME] = pawn_endgame_term(pos, endgame_scale(pos, scale_weights)) as f32;
     f
 }
 

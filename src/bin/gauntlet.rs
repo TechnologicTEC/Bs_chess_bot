@@ -44,6 +44,10 @@ fn main() {
     let mut pool: Vec<String> = Vec::new();
     let mut gate = 0.55f64;
     let mut seed = 0xC0FFEEu64;
+    // Null-move pruning is implemented but off by default: the build plan warned
+    // that a quiet-looking position here can be lost outright in one move. This
+    // enables it for side A only, so the A/B measures exactly that one setting.
+    let mut null_a = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -58,6 +62,7 @@ fn main() {
             "--movetime" => movetime = value(&mut i).parse().ok(),
             "--a" => a = Some(value(&mut i)),
             "--b" => b = Some(value(&mut i)),
+            "--null-a" => null_a = true,
             "--gate" => gate = value(&mut i).parse().unwrap_or(gate),
             "--seed" => seed = value(&mut i).parse().unwrap_or(seed),
             "--pool" => {
@@ -125,6 +130,11 @@ fn main() {
             Evaluator::Hand,
             limits.clone(),
         ),
+        Some("v2") => Participant::new(
+            format!("hand-v2-d{depth}{fallback}"),
+            Evaluator::HandV2,
+            limits.clone(),
+        ),
         Some("spec") => Participant::new(
             format!("hand-spec-d{depth}{fallback}"),
             Evaluator::HandSpec,
@@ -132,8 +142,12 @@ fn main() {
         ),
         Some(p) => Participant::new(name_of(p), load(p), limits.clone()),
     };
-    let pa = participant(&a, "");
+    let mut pa = participant(&a, "");
     let pb = participant(&b, "-baseline");
+    if null_a {
+        pa.options.use_null_move = true;
+        pa.name = format!("{}+null", pa.name);
+    }
 
     println!(
         "{} vs {} — {} games ({} openings, both colours), {} threads\n",
