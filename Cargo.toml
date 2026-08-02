@@ -27,6 +27,10 @@ path = "src/bin/gauntlet.rs"
 name = "perft"
 path = "src/bin/perft.rs"
 
+[[bin]]
+name = "tune"
+path = "src/bin/tune.rs"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

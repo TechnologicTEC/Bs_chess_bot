@@ -1,6 +1,6 @@
-//! Measuring progress (build plan, Phase 6).
+﻿//! Measuring progress (build plan, Phase 6).
 //!
-//! Self-play win rate will lie to you — a net can improve against itself while
+//! Self-play win rate will lie to you â€” a net can improve against itself while
 //! getting worse against a different playing style. Everything here plays engines
 //! against *other* engines over a fixed, randomised-opening book, with each
 //! opening played twice so both sides get it.
@@ -51,7 +51,7 @@ impl MatchScore {
     pub fn games(&self) -> u32 {
         self.wins + self.losses + self.draws
     }
-    /// Score rate in [0, 1] — a draw counts a half.
+    /// Score rate in [0, 1] â€” a draw counts a half.
     pub fn rate(&self) -> f64 {
         let g = self.games();
         if g == 0 {
@@ -82,7 +82,7 @@ impl MatchScore {
     }
     pub fn summary(&self, a: &str, b: &str) -> String {
         format!(
-            "{a} vs {b}: +{} -{} ={}  ({:.1}%)  Elo {:+.0} ± {:.0}",
+            "{a} vs {b}: +{} -{} ={}  ({:.1}%)  Elo {:+.0} Â± {:.0}",
             self.wins,
             self.losses,
             self.draws,
@@ -126,7 +126,7 @@ pub fn play_game(
     }
 }
 
-/// Play `pairs * 2` games — every opening once from each side — in parallel.
+/// Play `pairs * 2` games â€” every opening once from each side â€” in parallel.
 /// Returns the score from `a`'s point of view.
 ///
 /// Progress goes to stderr as pairs complete. A match can run for hours when one
@@ -171,7 +171,7 @@ pub fn play_match(a: &Participant, b: &Participant, pairs: usize, seed: u64) -> 
 
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             let step = (pairs / 20).max(1);
-            if n % step as u64 == 0 || n == pairs as u64 {
+            if n.is_multiple_of(step as u64) || n == pairs as u64 {
                 let elapsed = start.elapsed().as_secs_f64();
                 let eta = elapsed / n as f64 * (pairs as f64 - n as f64);
                 eprintln!(

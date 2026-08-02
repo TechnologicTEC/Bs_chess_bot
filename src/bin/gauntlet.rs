@@ -117,11 +117,17 @@ fn main() {
         return;
     }
 
-    // `hand` names the Phase 2 baseline; anything else is a path to a network.
+    // `hand` (tuned weights, what the engine plays) and `spec` (§6's starting
+    // guesses) name the two weight sets; anything else is a path to a network.
     let participant = |arg: &Option<String>, fallback: &str| match arg.as_deref() {
-        None | Some("hand") => Participant::new(
-            format!("hand-d{depth}{fallback}"),
+        None | Some("hand") | Some("tuned") => Participant::new(
+            format!("hand-tuned-d{depth}{fallback}"),
             Evaluator::Hand,
+            limits.clone(),
+        ),
+        Some("spec") => Participant::new(
+            format!("hand-spec-d{depth}{fallback}"),
+            Evaluator::HandSpec,
             limits.clone(),
         ),
         Some(p) => Participant::new(name_of(p), load(p), limits.clone()),

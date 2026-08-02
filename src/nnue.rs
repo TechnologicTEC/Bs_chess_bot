@@ -115,7 +115,7 @@ impl Network {
     }
 
     pub fn zeroed_with(hl: usize) -> Network {
-        assert!(hl <= MAX_HL && hl % 8 == 0, "hidden layer must be a multiple of 8, at most {MAX_HL}");
+        assert!(hl <= MAX_HL && hl.is_multiple_of(8), "hidden layer must be a multiple of 8, at most {MAX_HL}");
         Network {
             hl,
             ft_weight: vec![0.0; NUM_FEATURES * hl],
