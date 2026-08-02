@@ -82,6 +82,9 @@ pub const TUNED_WEIGHTS: HandWeights =
 /// 0.0087 — so roughly half the remaining gap to what a 214k-parameter network
 /// could extract, at no run-time cost.
 ///
+/// **+34 ± 15 Elo over `TUNED_WEIGHTS` across 2000 games**, and +79 ± 29 over the
+/// spec's starting guesses. This is what the engine plays.
+///
 /// Material and the tables are deliberately collinear (both scale with piece
 /// count), so the individual numbers below are not separately meaningful — only
 /// the total is. A knight reads as -157 material plus ~+680 table.
@@ -107,12 +110,13 @@ pub const INFINITY: i32 = 32_000;
 
 #[derive(Clone, Default)]
 pub enum Evaluator {
-    /// The hand evaluation with tuned weights. This is what the engine plays.
+    /// The hand evaluation with the tuned piece-square-table weights. This is
+    /// what the engine plays.
     #[default]
     Hand,
-    /// Candidate: the same evaluation refit with piece-square tables and three
-    /// added terms. Promoted to `Hand` once it has beaten it over enough games.
-    HandV2,
+    /// The previous tuned set, before piece-square tables. Kept as the baseline
+    /// the current one was measured against.
+    HandV1,
     /// The same evaluation with spec §6's starting guesses, kept as the baseline
     /// the tuned set is measured against.
     HandSpec,
@@ -125,16 +129,16 @@ impl Evaluator {
     #[inline]
     pub fn eval(&self, pos: &Position) -> i32 {
         match self {
-            Evaluator::Hand => evaluate_with(pos, &TUNED_WEIGHTS),
-            Evaluator::HandV2 => evaluate_with(pos, &TUNED_V2_WEIGHTS),
+            Evaluator::Hand => evaluate_with(pos, &TUNED_V2_WEIGHTS),
+            Evaluator::HandV1 => evaluate_with(pos, &TUNED_WEIGHTS),
             Evaluator::HandSpec => evaluate_with(pos, &SPEC_WEIGHTS),
             Evaluator::Nnue(n) => n.evaluate(pos),
         }
     }
     pub fn name(&self) -> &'static str {
         match self {
-            Evaluator::Hand => "hand-tuned",
-            Evaluator::HandV2 => "hand-v2",
+            Evaluator::Hand => "hand-v2",
+            Evaluator::HandV1 => "hand-v1",
             Evaluator::HandSpec => "hand-spec",
             Evaluator::Nnue(_) => "nnue",
         }

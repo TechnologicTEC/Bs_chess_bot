@@ -1,4 +1,4 @@
-//! Phase 6 — measuring progress.
+﻿//! Phase 6 â€” measuring progress.
 //!
 //! Gate a candidate against the previous generation:
 //!   gauntlet --pairs 100 --depth 6 --a nets/gen2.bin --b nets/gen1.bin
@@ -44,10 +44,11 @@ fn main() {
     let mut pool: Vec<String> = Vec::new();
     let mut gate = 0.55f64;
     let mut seed = 0xC0FFEEu64;
-    // Null-move pruning is implemented but off by default: the build plan warned
-    // that a quiet-looking position here can be lost outright in one move. This
-    // enables it for side A only, so the A/B measures exactly that one setting.
+    // Null-move pruning is on by default now (+54 Elo). This forces it on for
+    // side A only, which is how that measurement was taken; pair it with
+    // `--no-null-b` to re-run the comparison.
     let mut null_a = false;
+    let mut no_null_b = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -63,6 +64,7 @@ fn main() {
             "--a" => a = Some(value(&mut i)),
             "--b" => b = Some(value(&mut i)),
             "--null-a" => null_a = true,
+            "--no-null-b" => no_null_b = true,
             "--gate" => gate = value(&mut i).parse().unwrap_or(gate),
             "--seed" => seed = value(&mut i).parse().unwrap_or(seed),
             "--pool" => {
@@ -122,7 +124,7 @@ fn main() {
         return;
     }
 
-    // `hand` (tuned weights, what the engine plays) and `spec` (§6's starting
+    // `hand` (tuned weights, what the engine plays) and `spec` (Â§6's starting
     // guesses) name the two weight sets; anything else is a path to a network.
     let participant = |arg: &Option<String>, fallback: &str| match arg.as_deref() {
         None | Some("hand") | Some("tuned") => Participant::new(
@@ -130,9 +132,9 @@ fn main() {
             Evaluator::Hand,
             limits.clone(),
         ),
-        Some("v2") => Participant::new(
-            format!("hand-v2-d{depth}{fallback}"),
-            Evaluator::HandV2,
+        Some("v1") => Participant::new(
+            format!("hand-v1-d{depth}{fallback}"),
+            Evaluator::HandV1,
             limits.clone(),
         ),
         Some("spec") => Participant::new(
@@ -143,14 +145,18 @@ fn main() {
         Some(p) => Participant::new(name_of(p), load(p), limits.clone()),
     };
     let mut pa = participant(&a, "");
-    let pb = participant(&b, "-baseline");
+    let mut pb = participant(&b, "-baseline");
     if null_a {
         pa.options.use_null_move = true;
         pa.name = format!("{}+null", pa.name);
     }
+    if no_null_b {
+        pb.options.use_null_move = false;
+        pb.name = format!("{}-nonull", pb.name);
+    }
 
     println!(
-        "{} vs {} — {} games ({} openings, both colours), {} threads\n",
+        "{} vs {} â€” {} games ({} openings, both colours), {} threads\n",
         pa.name,
         pb.name,
         pairs * 2,
@@ -162,9 +168,9 @@ fn main() {
     println!("{}", score.summary(&pa.name, &pb.name));
 
     if score.passes_gate(gate) {
-        println!("\nPROMOTE — {:.1}% clears the {:.0}% gate", 100.0 * score.rate(), 100.0 * gate);
+        println!("\nPROMOTE â€” {:.1}% clears the {:.0}% gate", 100.0 * score.rate(), 100.0 * gate);
     } else {
-        println!("\nHOLD — {:.1}% does not clear the {:.0}% gate", 100.0 * score.rate(), 100.0 * gate);
+        println!("\nHOLD â€” {:.1}% does not clear the {:.0}% gate", 100.0 * score.rate(), 100.0 * gate);
         std::process::exit(1);
     }
 }
