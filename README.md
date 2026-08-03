@@ -175,9 +175,9 @@ On a 22-core laptop, release build:
 
 | Measurement | Value |
 |---|---|
-| Search from the start position | depth 7 in ~2 s, 3.9M nodes/s (one thread) |
-| Self-play, depth 5 | ~260 positions/s, 0.25 s/game across all cores |
-| Self-play, depth 6 | ~83 positions/s, 1.3 s/game across all cores |
+| Search from the start position | **depth 10 in ~2.9 s**, 1.2M nodes/s (one thread) |
+| Depth 6 from the start position | 272k nodes, 0.27 s |
+| Self-play, depth 6 | ~60 positions/s across all cores |
 | Perft, start position depths 1–4 | 6.97e9 nodes in 1.1 s (all cores) |
 
 Self-play throughput is very sensitive to transposition table size, and in the
@@ -203,7 +203,77 @@ rather than movegen, is the bottleneck.
 
 ---
 
-## The training loop
+## Strength, and how it was gained
+
+Every number below is an equal-time match, both sides on the same clock, each
+opening played from both colours. Cumulative against the engine the build plan
+originally specified:
+
+| change | games | Elo |
+|---|---|---|
+| Texel-tuned weights vs spec §6's guesses | 200 | +49 ± 49 |
+| Piece-square tables on top of that | 2000 | +34 ± 15 |
+| Null-move pruning | 600 | +54 ± 28 |
+| **Everything vs the spec baseline** | **600** | **+123 ± 30** |
+
+Two things worth reading off that table.
+
+**The gains are not fully additive.** Null-move (+54) and the tables (+34) predict
++88 together; measured head-to-head they give **+62 ± 24**. They overlap — null-move
+prunes on the static evaluation, so a better evaluation partly does the same job.
+Always measure the combination you actually intend to ship.
+
+**None of it cost speed.** Tuning is the same arithmetic with different constants,
+and the tables are one lookup per piece. Compare that with the NNUE below, where
+better judgement had to be paid for in search depth.
+
+### What tuning found
+
+Spec §6 calls its weights *"guesses for a first alpha-beta pass, tune by self-play
+afterwards"*. Fitting them to ~1M labelled self-play positions (`tune`):
+
+| term | spec | tuned |
+|---|---|---|
+| Queen | 10.0 | **17.0** |
+| Pawn | 0.25 | **0.70** |
+| Bishop | 4.0 | 3.2 |
+| Knight, Rook | 9.0, 4.5 | essentially unchanged |
+
+**And one that contradicts the spec.** §5.1 states as a headline result that pieces
+near your own king are a liability, pricing it at −0.4. Fitted, it comes out at
+**+0.48** — a mild asset. The *live* term (an enemy slider that can actually reach
+and detonate) stayed strongly negative. The refined reading: **being reachable is
+what kills you, not proximity.** Worth telling anyone else implementing this spec.
+
+Piece-square tables exploit the dihedral symmetry — a1, a8, h1 and h8 cannot have
+different values — so 64 squares collapse to **10 orbits** and a six-piece table is
+60 numbers, not 384. Correct by construction, and impossible to overfit.
+
+## The NNUE, and why it lost
+
+The build plan's headline decision was NNUE evaluation driving alpha-beta. It is
+implemented, it works, and it is **200 Elo behind the tuned hand evaluation** at
+equal time. Kept in the tree for the record.
+
+What was measured before concluding that:
+
+| hypothesis | test | result |
+|---|---|---|
+| Needs more data | 358k → 2.9M positions | nothing outside the error bars |
+| Needs more capacity | widths 256 / 128 / 64 / 32 | wider learns more, never pays for its speed |
+| Needs faster inference | fixed a non-vectorising reduction | 3.1×, still losing |
+| int8 quantisation | measured | **0.93× — slower** |
+
+The root cause is structural. The network fits the data far better (validation
+loss 0.0087 against the hand evaluation's 0.0165) but costs ~7× more per node, and
+in this variant depth is worth more than judgement. A fixed-*depth* gate flatters
+it (+24 Elo); at fixed *time* it collapses (−31 to −147 depending on width).
+
+That 0.0165 vs 0.0087 gap is the useful residue: it says how much predictive
+signal a hand-written evaluation is still leaving on the table, and the piece-square
+tables closed about half of it at zero run-time cost.
+
+## The self-play training loop
 
 ```
 gen 0: the hand evaluation (spec §6)
@@ -227,8 +297,12 @@ python tools/verify_net.py --net nets/gen1.bin
 target/release/gauntlet  --pairs 100 --depth 6 --a nets/gen1.bin --b hand
 ```
 
-Aim for 5–20M filtered positions per generation. Most of the strength gain arrives in
-generations 1–4; returns flatten after that.
+The build plan aims for 5–20M filtered positions per generation and expects most of
+the gain in generations 1–4. In practice generation 1 never beat the hand
+evaluation, so the loop was blocked at its premise — each generation needs the
+previous one to be a *stronger player*, and it wasn't. The self-play half of this
+pipeline is still the thing that produces labelled data for `tune`, which is where
+the strength actually came from.
 
 ### Two things that will bite you
 
@@ -282,7 +356,7 @@ centipawns puts every gradient through a 1/400 divisor and the network never mov
 ## Testing
 
 ```sh
-cargo test                 # 76 tests; debug build keeps the make_move assertions live
+cargo test                 # 77 tests; debug build keeps the make_move assertions live
 cargo test --release
 python tools/perft_gate.py
 ```
@@ -299,14 +373,39 @@ Worth knowing about three of them:
 
 ---
 
+## Tuning the evaluation
+
+The highest-return loop in this project, and it takes minutes:
+
+```sh
+target/release/selfplay --games 20000 --depth 6 --out data/next.bin
+target/release/tune --data data/*.bin --sample 400000
+# paste the printed constants into TUNED_V2_WEIGHTS in src/eval.rs, rebuild
+target/release/gauntlet --pairs 400 --movetime 1000 --a hand --b v1
+```
+
+`tune` starts from the weights currently compiled in, so passes compound. A test
+(`feature_model_reproduces_the_evaluation`) pins the tuner's feature model to what
+the engine actually computes — without it the tuner can silently optimise a
+different function, which happened once during development.
+
 ## Not done
 
 - The Phase 3 checkpoint the plan calls the highest-value one — *does the hand-written
   alpha-beta already beat your opponent's bot?* — needs the opponent. Everything to run it is
   here; nothing substitutes for playing the games.
-- A real training run. The pipeline is exercised end to end, but only on 400 self-play games,
-  which is a smoke test and not a generation. Gen 1 at that volume scores 51.9% against the
-  hand evaluation — parity within the error bar, which is the expected result for a net
-  trained to imitate the evaluation it was generated from.
-- King-bucketing (HalfKP-style) and int8/int16 quantisation. Both are Phase 5+ in the plan and
-  neither is worth doing before a generation actually gates.
+- **Another tuning pass.** 1.78M fresh positions from the current engine are sitting in
+  `data/gen2.bin` and have never been fitted. `tune` compounds from the current weights, so
+  this is the cheapest remaining gain.
+- **More evaluation terms.** The validation-loss gap (0.0165 against the network's 0.0087)
+  says roughly half the available signal is still unclaimed. Mobility, king-distance and
+  threat terms are the obvious candidates — but mobility needs attack sets for every piece,
+  which is not free, so each one has to be measured rather than assumed.
+- **A faster test harness.** 100-game matches give ±70 Elo, far too coarse for the +10–15 Elo
+  changes that search tuning produces. SPRT and a shorter time control would unblock LMR and
+  aspiration-window tuning.
+- **Auditing the teleport restriction.** The restricted generator prunes ~250 pawn teleports
+  to ~20 using a hand-written heuristic. If it discards good moves, that is silent strength
+  loss the whole project inherits. Compare restricted against full generation at fixed nodes.
+- King-bucketing and AVX2 intrinsics for the NNUE. Only worth revisiting if the network track
+  is ever reopened, which the measurements above argue against.

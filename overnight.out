@@ -1,2 +1,12 @@
 [23:53:10] === overnight run starting ===
 [23:53:10] --- 1/4 null-move pruning, 600 games ---
+[00:28:12] NULLMOVE hand-tuned-d6+null vs hand-tuned-d6-baseline — 600 games (300 openings, both colours), 22 threads hand-tuned-d6+null vs hand-tuned-d6-baseline: +312 -219 =69  (57.8%)  Elo +54 Â± 28
+[00:28:12] --- 2/4 v2 (piece-square tables) vs current tuned, 2000 games ---
+[02:15:39] V2-vs-TUNED hand-v2-d6 vs hand-tuned-d6-baseline — 2000 games (1000 openings, both colours), 22 threads hand-v2-d6 vs hand-tuned-d6-baseline: +1040 -843 =117  (54.9%)  Elo +34 Â± 15
+[02:15:39] --- 3/4 v2 vs spec weights, 600 games ---
+[02:49:09] V2-vs-SPEC hand-v2-d6 vs hand-spec-d6-baseline — 600 games (300 openings, both colours), 22 threads hand-v2-d6 vs hand-spec-d6-baseline: +345 -211 =44  (61.2%)  Elo +79 Â± 29
+[02:49:09] --- 4/4 generating fresh data with the current default engine ---
+[14:13:15] SELFPLAY games         20000
+[14:13:15] SELFPLAY positions     1780846 kept of 2063787 seen (86.3% passed the quiet filter)
+[14:13:15] SELFPLAY throughput    43 positions/s, 16.01M nodes/s, 41045.0 s total
+[14:13:15] === overnight run complete ===
